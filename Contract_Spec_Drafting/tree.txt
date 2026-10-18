@@ -1,0 +1,30 @@
+contracts/
+├── schema/
+│   ├── odc-0.1.schema.json
+│   └── controlled-vocabulary.yaml
+│
+├── common/
+│   ├── validate-fastq.odc.yaml
+│   ├── pair-reads.odc.yaml
+│   └── assess-read-quality.odc.yaml
+│
+├── environmental-dna/
+│   ├── detect-primers.odc.yaml
+│   ├── remove-primers.odc.yaml
+│   ├── denoise-reads.odc.yaml
+│   ├── remove-contaminants.odc.yaml
+│   └── assign-taxonomy.odc.yaml
+│
+├── microbial/
+│   ├── short-read-trimming.odc.yaml
+│   ├── taxonomic-profiling.odc.yaml
+│   └── metagenome-assembly.odc.yaml
+│
+├── plant/
+│   ├── variant-filtering.odc.yaml
+│   ├── population-structure.odc.yaml
+│   └── association-analysis.odc.yaml
+│
+└── tests/
+    ├── fixtures/
+    └── expected-results/

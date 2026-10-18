@@ -1,0 +1,78 @@
+.samtools-header {
+  width: min(100%, 900px);
+  margin: 24px auto;
+  font-family: Inter, system-ui, sans-serif;
+  color: #172033;
+}
+
+.samtools-header__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.samtools-header__heading h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.samtools-header__heading p {
+  margin: 5px 0 0;
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+.samtools-header__badge {
+  flex-shrink: 0;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.samtools-header__empty {
+  padding: 20px;
+  border: 1px solid #dbe2ea;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.samtools-header__output {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 520px;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid #dbe2ea;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre;
+}
+
+.samtools-header__error {
+  padding: 16px;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.samtools-header__error pre {
+  margin: 8px 0 0;
+  overflow: auto;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+}

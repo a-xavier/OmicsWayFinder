@@ -1,0 +1,29 @@
+decision_result:
+  contract: "odc:short-read-quality-trimming"
+  contract_version: "1.0.0"
+
+  status: recommend
+
+  evidence_used:
+    read_length: 151
+    mean_quality: 34.92
+    inferred_read: R2
+    platform: SHORT_READS
+
+  selected_tool:
+    name: fastp
+    version: "0.24.0"
+
+  resolved_parameters:
+    trim_5_prime: 8
+    trim_3_prime: 145
+    minimum_read_length: 75
+
+  explanation:
+    - "Terminal quality declined below Q25."
+    - "Positions 8 to 145 satisfied the quality rule."
+    - "The retained lengths satisfied the required overlap."
+
+  limitations:
+    - "Contamination was not evaluated."
+    - "The decision does not establish biological representativeness."

@@ -1,0 +1,115 @@
+
+.dropzone-wrapper {
+    width: min(100%, 720px);
+    margin: 40px auto;
+    font-family: Inter, system-ui, sans-serif;
+    color: #172033;
+}
+
+.dropzone {
+    min-height: 260px;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border: 2px dashed #a8b4c8;
+    border-radius: 18px;
+    background: #f8fafc;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 160ms ease, background 160ms ease,
+    transform 160ms ease, box-shadow 160ms ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+    border-color: #2563eb;
+    background: #eff6ff;
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+    outline: none;
+}
+
+.dropzone--dragging {
+    border-color: #2563eb;
+    background: #dbeafe;
+    transform: scale(1.01);
+}
+
+.dropzone--disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.dropzone__input {
+    display: none;
+}
+
+.dropzone__icon {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 16px;
+    display: grid;
+    place-items: center;
+    border-radius: 14px;
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-size: 28px;
+    font-weight: 700;
+}
+
+.dropzone__title {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 700;
+}
+
+.dropzone__hint,
+.dropzone__formats {
+    margin: 8px 0 0;
+    color: #64748b;
+    font-size: 0.92rem;
+}
+
+.dropzone__formats {
+    font-size: 0.8rem;
+}
+
+.selected-files {
+    margin-top: 20px;
+    padding: 20px;
+    border: 1px solid #dbe2ea;
+    border-radius: 14px;
+    background: white;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+
+.selected-files h3 {
+    margin: 0 0 12px;
+    font-size: 1rem;
+}
+
+.selected-files ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.selected-files li {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+    border-top: 1px solid #edf1f5;
+    font-size: 0.9rem;
+}
+
+.selected-files li span:first-child {
+    overflow-wrap: anywhere;
+}
+
+.selected-files li span:last-child {
+    flex-shrink: 0;
+    color: #64748b;
+}

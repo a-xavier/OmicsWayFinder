@@ -1,0 +1,312 @@
+odc_version: "0.1"
+
+contract:
+  id: "odc:short-read-quality-trimming"
+  version: "1.0.0"
+  title: "Quality trimming of paired short reads"
+  description: >
+    Determines whether quality trimming is supported and derives
+    trimming boundaries from observed read-quality profiles.
+
+  status: "draft"
+
+  authors:
+    - name: "Example author"
+      role: "contract author"
+
+  license: "CC-BY-4.0"
+
+scope:
+  domains:
+    - bacterial_genomics
+    - viral_genomics
+
+  input_kinds:
+    - FASTQ_FILE
+
+  input_formats:
+    - FASTQ
+    - FASTQ_GZ
+
+  platforms:
+    - SHORT_READS
+
+  exclusions:
+    - single_cell_rna
+    - nanopore_reads
+    - pacbio_reads
+
+evidence:
+  required:
+    - id: input_validity
+      property: input.validity
+      source:
+        - observed
+
+    - id: read_length
+      property: stats.readLength
+      source:
+        - observed
+
+    - id: quality_profile
+      property: stats.qualityByPosition
+      source:
+        - observed
+
+  optional:
+    - id: paired_read
+      property: stats.inferredRead
+      source:
+        - observed
+        - inferred
+
+    - id: expected_insert_length
+      property: experiment.expectedInsertLength
+      source:
+        - user_supplied
+        - metadata
+
+    - id: primer_coordinates
+      property: experiment.primerCoordinates
+      source:
+        - observed
+        - user_supplied
+
+prerequisites:
+  all:
+    - id: valid_input
+      expression: "input.validity == 'VALID'"
+      failure:
+        action: abstain
+        message: "The input file failed structural validation."
+
+    - id: short_read_data
+      expression: "input.platform == 'SHORT_READS'"
+      failure:
+        action: not_applicable
+        message: "This contract applies only to short-read data."
+
+    - id: quality_available
+      expression: "exists(stats.qualityByPosition)"
+      failure:
+        action: ask
+        message: "A positional quality profile is required."
+
+  any:
+    - id: overlap_not_required
+      expression: "experiment.requiresReadMerging == false"
+
+    - id: overlap_can_be_evaluated
+      expression: "exists(experiment.expectedInsertLength)"
+
+decision:
+  type: "parameter_selection"
+  operation:
+    id: "EDAM:operation_3218"
+    label: "Read preprocessing"
+
+  question: >
+    Should terminal quality trimming be performed, and which
+    read positions should be retained?
+
+conditions:
+  - id: terminal_quality_decline
+    expression: >
+      rolling_median(stats.qualityByPosition, window=5)
+      contains_terminal_values_below 25
+
+    if_true:
+      action: recommend
+      recommendation: quality_trimming
+
+    if_false:
+      action: skip
+      message: >
+        Terminal read quality does not meet the evidence threshold
+        for quality trimming.
+
+tool_selection:
+  strategy: "benchmark_ranked"
+
+  candidates:
+    - id: "biotools:fastp"
+      name: "fastp"
+      compatible_if: "input.platform == 'SHORT_READS'"
+
+    - id: "biotools:trimmomatic"
+      name: "Trimmomatic"
+      compatible_if: "input.platform == 'SHORT_READS'"
+
+    - id: "biotools:cutadapt"
+      name: "Cutadapt"
+      compatible_if: "exists(experiment.primerCoordinates)"
+
+  ranking:
+    benchmark_set: "odc-benchmark:short-read-trimming-v1"
+    primary_metric: "retained_valid_reads"
+    secondary_metrics:
+      - runtime
+      - memory
+      - downstream_concordance
+
+parameter_rules:
+  trim_5_prime:
+    derive:
+      method: "first_stable_quality_position"
+      inputs:
+        quality_profile: "stats.qualityByPosition"
+      settings:
+        minimum_quality: 25
+        window: 5
+
+  trim_3_prime:
+    derive:
+      method: "last_stable_quality_position"
+      inputs:
+        quality_profile: "stats.qualityByPosition"
+      settings:
+        minimum_quality: 25
+        window: 5
+
+  minimum_read_length:
+    derive:
+      method: "preserve_required_overlap"
+      inputs:
+        original_length: "stats.readLength"
+        expected_insert_length: "experiment.expectedInsertLength"
+
+      fallback:
+        method: "fraction_of_original_length"
+        proportion: 0.5
+
+  paired_reads:
+    constraint:
+      expression: >
+        parameters.forward.minimum_read_length
+        and parameters.reverse.minimum_read_length
+        preserve experiment.minimumRequiredOverlap
+
+      failure:
+        action: ask
+        message: >
+          The expected insert length is required to determine
+          whether paired reads can still be merged after trimming.
+
+outputs:
+  data:
+    kind: FASTQ_READ_SET
+    format: FASTQ_GZ
+
+  reports:
+    - quality_before_trimming
+    - quality_after_trimming
+    - retained_read_count
+    - discarded_read_count
+    - selected_parameters
+    - decision_explanation
+
+claims:
+  supports:
+    - "Low-quality terminal bases were removed using declared rules."
+    - "The selected trimming positions satisfied the contract prerequisites."
+
+  does_not_support:
+    - "Sequencing errors were fully corrected."
+    - "Contaminating sequences were removed."
+    - "The retained reads are biologically representative."
+    - "Paired reads remain mergeable unless insert length was evaluated."
+
+decision_outcomes:
+  recommend:
+    description: "Run the selected trimming configuration."
+
+  skip:
+    description: "Continue without quality trimming."
+
+  ask:
+    description: "Request specific missing experimental information."
+
+  abstain:
+    description: "Do not recommend trimming."
+
+  not_applicable:
+    description: "Do not apply this contract to the input."
+
+empirical_evidence:
+  benchmark:
+    id: "odc-benchmark:short-read-trimming-v1"
+    status: "planned"
+
+    datasets:
+      - "held-out bacterial short-read datasets"
+      - "held-out viral short-read datasets"
+      - "synthetic quality-degradation cases"
+
+    comparisons:
+      tools:
+        - fastp
+        - Trimmomatic
+        - Cutadapt
+
+      parameter_ranges:
+        minimum_quality:
+          - 15
+          - 20
+          - 25
+          - 30
+
+        window:
+          - 3
+          - 5
+          - 10
+
+    evaluation_metrics:
+      - retained_valid_reads
+      - read_pair_retention
+      - merge_success
+      - mapping_concordance
+      - downstream_variant_concordance
+      - runtime
+      - peak_memory
+
+  references:
+    - id: "doi:TO_BE_ADDED"
+      supports:
+        - terminal_quality_assessment
+        - minimum_overlap_requirement
+
+review:
+  required_roles:
+    - sequencing_domain_expert
+    - bioinformatician
+    - statistical_reviewer
+
+  reviews: []
+
+  disagreement_policy: "retain_alternative_contracts"
+
+tests:
+  - id: valid_terminal_quality_decline
+    input: "tests/terminal-quality-decline.json"
+    expected:
+      action: recommend
+
+  - id: high_quality_reads
+    input: "tests/high-quality-reads.json"
+    expected:
+      action: skip
+
+  - id: missing_insert_length
+    input: "tests/missing-insert-length.json"
+    expected:
+      action: ask
+
+  - id: invalid_fastq
+    input: "tests/invalid-fastq.json"
+    expected:
+      action: abstain
+
+  - id: nanopore_input
+    input: "tests/nanopore-input.json"
+    expected:
+      action: not_applicable

@@ -1,0 +1,9 @@
+action:
+  - recommend
+  - skip
+  - ask
+  - abstain
+  - not_applicable
+  - descriptive_only
+  - recommend_with_warning
+  - offer_alternatives
