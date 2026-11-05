@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import "./Dropzone.css";
 
 export type DropzoneProps = {
@@ -6,6 +6,7 @@ export type DropzoneProps = {
   accept?: string;
   multiple?: boolean;
   disabled?: boolean;
+  files: File[];
 };
 
 export default function Dropzone({
@@ -13,11 +14,17 @@ export default function Dropzone({
   accept,
   multiple = true,
   disabled = false,
+  files,
 }: DropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  
+  useEffect(() => {
+    setSelectedFiles(files);
+  }, [files]);
+
 
   function selectFiles(files: FileList | null) {
     if (!files || disabled) return;
@@ -98,7 +105,7 @@ export default function Dropzone({
         {accept && <p className="dropzone__formats">Accepted: {accept}</p>}
       </div>
 
-      {selectedFiles.length > 0 && (
+      {/* {selectedFiles.length > 0 && (
         <div className="selected-files" aria-live="polite">
           <h3>Selected files</h3>
           <ul>
@@ -110,7 +117,7 @@ export default function Dropzone({
             ))}
           </ul>
         </div>
-      )}
+      )} */}
     </div>
   );
 }

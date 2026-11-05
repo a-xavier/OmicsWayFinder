@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import './App.css'
 
-import SamtoolsViewHeader from './components/SamtoolsViewHeader'
 import Dropzone from './components/Dropzone'
-import PipelineSelector from './components/PipelineSelector'
-import  { sequencing_possibility_graph } from '../graphs.tsx'
+import PCSpec_detector from './components/PCSpec_detector'
+import FileValidator from './components/FileValidator'
 
 function App() {
 
@@ -12,17 +11,18 @@ function App() {
 
   const onFilesSelected = (files: File[]) => {
     setSelectedFiles(files)
-    console.log(files)
   }
 
+  const clearSelectedFiles = () => {
+    setSelectedFiles([])
+  }
 
-  
   return (
     <>
-      <p>Hello, Bioinformatics in the Browser!</p>
-      <Dropzone onFilesSelected={onFilesSelected} multiple={false}/>
-      <SamtoolsViewHeader file={selectedFiles[0] ?? null} />
-      <PipelineSelector graph={sequencing_possibility_graph} />
+      <p style={{ fontWeight: 'bold' }}>Omicswayfinder Prototype</p>
+      <Dropzone onFilesSelected={onFilesSelected} multiple={false} files={selectedFiles} />
+      <PCSpec_detector />
+      <FileValidator files={selectedFiles} clearSelectedFiles={clearSelectedFiles}/>
     </>
   )
 }
