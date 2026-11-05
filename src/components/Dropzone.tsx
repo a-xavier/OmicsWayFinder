@@ -19,7 +19,8 @@ export default function Dropzone({
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // TODO: Restore the selected-files display or remove this state.
+  const [_selectedFiles, setSelectedFiles] = useState<File[]>([]);
   
   useEffect(() => {
     setSelectedFiles(files);
@@ -122,7 +123,8 @@ export default function Dropzone({
   );
 }
 
-function formatFileSize(bytes: number) {
+// TODO: Use this helper when restoring the selected-files display or remove it.
+function _formatFileSize(bytes: number) {
   if (bytes === 0) return "0 B";
 
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -136,3 +138,5 @@ function formatFileSize(bytes: number) {
     units[unitIndex]
   }`;
 }
+
+void _formatFileSize;

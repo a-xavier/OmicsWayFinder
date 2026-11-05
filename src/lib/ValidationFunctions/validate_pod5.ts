@@ -343,7 +343,9 @@ export async function validatePod5File(
 
   const res = await extractRunInfoCommon((o, l) => readSlice(file, o, l), footer);
   const runInfo = res.runInfo;
-  const decodedTablesDebug = res.decodedTablesDebug;
+  // TODO: Use the decoded-table debug data or remove this binding.
+  const _decodedTablesDebug = res.decodedTablesDebug;
+  void _decodedTablesDebug;
 
   // we need
   // barcoding enabled

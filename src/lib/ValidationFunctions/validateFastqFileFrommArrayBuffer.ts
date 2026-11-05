@@ -279,7 +279,8 @@ export function classifyFastqBasedOnHeader(header: string): "R1" | "R2" | "UNKNO
   return "UNKNOWN";
 }
 
-function entropy({ A, C, G, T }: Record<string, number>, total: number): number {
+// TODO: Integrate entropy into FASTQ analysis or remove this helper.
+function _entropy({ A, C, G, T }: Record<string, number>, total: number): number {
   let H = 0;
   for (const count of [A, C, G, T]) {
     if (count > 0) {
@@ -289,6 +290,8 @@ function entropy({ A, C, G, T }: Record<string, number>, total: number): number 
   }
   return H;
 }
+
+void _entropy;
 
 export function collisionRateAnalysis(reads: FastqRead[], prefixLength: number) {
   const prefixCounts = new Map<string, number>();

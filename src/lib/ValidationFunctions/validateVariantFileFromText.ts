@@ -60,7 +60,8 @@ export default async function validateVariantFileFromText(header: string, body: 
   // Check if any headerInfo[1] contains (lowercase) hg19 / hg38 / grch37 / grch38 / T2T / CHM13 and return
   // hg19 for hg19/Grch37, hg38 for hg38/Grch38 abd t2t for T2T/CHM13, otherwise INVALID
   let human_assembly_name: "hg19" | "hg38" | "t2t" | "UNKNOWN" = "UNKNOWN";
-  for (const [key, value] of headerInfo) {
+  // TODO: Use the header key to restrict assembly detection to relevant fields.
+  for (const [_key, value] of headerInfo) {
     if (value.toLowerCase().includes("hg19") || value.toLowerCase().includes("grch37")) {
       human_assembly_name = "hg19";
       break;
