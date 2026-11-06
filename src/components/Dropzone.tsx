@@ -62,63 +62,66 @@ export default function Dropzone({
   }
 
   return (
-    <div className="dropzone-wrapper">
-      <div
-        className={`dropzone ${isDragging ? "dropzone--dragging" : ""} ${
-          disabled ? "dropzone--disabled" : ""
-        }`}
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        aria-disabled={disabled}
-        onClick={openFileDialog}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openFileDialog();
-          }
-        }}
-        onDragEnter={handleDragEnter}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <input
-          ref={inputRef}
-          className="dropzone__input"
-          type="file"
-          accept={accept}
-          multiple={multiple}
-          disabled={disabled}
-          onChange={(event) => {
-            selectFiles(event.target.files);
-            event.target.value = "";
+    <div>
+      <div className="dropzone-wrapper">
+        <div
+          className={`dropzone ${isDragging ? "dropzone--dragging" : ""} ${
+            disabled ? "dropzone--disabled" : ""
+          }`}
+          role="button"
+          tabIndex={disabled ? -1 : 0}
+          aria-disabled={disabled}
+          onClick={openFileDialog}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              openFileDialog();
+            }
           }}
-        />
+          onDragEnter={handleDragEnter}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <input
+            ref={inputRef}
+            className="dropzone__input"
+            type="file"
+            accept={accept}
+            multiple={multiple}
+            disabled={disabled}
+            onChange={(event) => {
+              selectFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
 
-        <div className="dropzone__icon" aria-hidden="true">
-          ↑
+          <div className="dropzone__icon" aria-hidden="true">
+            ↑
+          </div>
+
+          <p className="dropzone__title">
+            {isDragging ? "Release files here" : "Drop files here"}
+          </p>
+          <p className="dropzone__hint">or click to choose files</p>
+          {accept && <p className="dropzone__formats">Accepted: {accept}</p>}
         </div>
 
-        <p className="dropzone__title">
-          {isDragging ? "Release files here" : "Drop files here"}
-        </p>
-        <p className="dropzone__hint">or click to choose files</p>
-        {accept && <p className="dropzone__formats">Accepted: {accept}</p>}
+        {/* {selectedFiles.length > 0 && (
+          <div className="selected-files" aria-live="polite">
+            <h3>Selected files</h3>
+            <ul>
+              {selectedFiles.map((file) => (
+                <li key={`${file.name}-${file.lastModified}`}>
+                  <span>{file.name}</span>
+                  <span>{formatFileSize(file.size)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )} */}
+        <p className="dropzone__supported-formats">Supported formats: FASTQ/FASTQ.GZ | BAM/SAM/CRAM | VCF/VCF.GZ/BCF | POD5 | IDAT | FASTA/FASTA.GZ</p>
       </div>
-
-      {/* {selectedFiles.length > 0 && (
-        <div className="selected-files" aria-live="polite">
-          <h3>Selected files</h3>
-          <ul>
-            {selectedFiles.map((file) => (
-              <li key={`${file.name}-${file.lastModified}`}>
-                <span>{file.name}</span>
-                <span>{formatFileSize(file.size)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )} */}
     </div>
   );
 }

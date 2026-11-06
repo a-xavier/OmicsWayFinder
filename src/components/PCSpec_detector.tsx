@@ -41,6 +41,7 @@ export default function PCSpec_detector() {
       <p><span className="highlight">Architecture:</span> {arch ?? 'Detecting...'}</p>
       <p><span className="highlight">Platform:</span> {platform ?? 'Detecting...'}</p>
       <p><span className="highlight">Browser:</span> {browser ?? 'Detecting...'}</p>
+        <p>Experimental - only works in chrome</p>
     </div>
   )
 }

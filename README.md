@@ -55,26 +55,4 @@ visible.
 	clear uncertainty, manageable cognitive load and efficient workflows for
 	different levels of experience.
 
-## Research Status
-
-This repository contains an evolving prototype and early decision-contract drafts,
-not a validated end-to-end analysis platform. The aims above are research
-objectives, not a list of completed features. Evaluation will test context
-reconstruction, decision validity, reproducibility, recovery, accessibility and
-researcher understanding. Environmental DNA metabarcoding is the planned primary
-end-to-end example, with environmental metagenomics and plant population genomics
-providing transfer tests.
-
-OmicsWayfinder aims to support scientific expertise, not replace bioinformaticians
-or treat successful software execution as proof of a scientifically valid result.
-
-## Website Deployment
-
-In GitHub, open **Settings > Pages** and set **Source** to **GitHub Actions**.
-
-Pushes to the repository's default branch build the site, publish the contents of
-`dist` to the `gh-page` branch, and deploy to GitHub Pages. The workflow can also
-be run manually from the **Actions** tab on the default branch. Other branches
-do not deploy. No additional token or secret is required.
-
-Website: https://a-xavier.github.io/OmicsWayFinder/
+** RESEARCH USE ONLY **

@@ -94,12 +94,26 @@ export interface IdatFile extends BioFileBase<"IDAT", "IDAT" | "INVALID"> {
   color: "RED" | "GREEN";
 }
 
+export interface FastaFile extends BioFileBase<"FASTA", "FASTA" | "FASTA.GZ" | "FA" | "FA.GZ" | "FNA" | "FNA.GZ" | "INVALID"> {
+  stats?: {
+    sequenceCount?: number;
+    sequences: {
+      name: string;
+      length: number;
+    }[];
+    lettersPresent?: string[];
+    mixedCase: boolean;
+    type?: "DNA" | "RNA" | "PROTEIN" | "UNKNOWN";
+  };
+}
+
 export type BioFile =
   | AlignmentFile
   | FastqFile
   | VariantFile
   | Pod5File
   | IdatFile
+  | FastaFile
   | BioFileBase<"UNKNOWN", "UNKNOWN">;
 
 /* ============================================================================

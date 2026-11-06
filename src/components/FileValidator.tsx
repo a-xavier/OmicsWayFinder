@@ -63,6 +63,9 @@ export default function FileValidator({ files, clearSelectedFiles }: { files: Fi
                                     <span className="file-validator__validity" data-validity={file.validity}>
                                         {file.validity}
                                     </span>
+                                    <span className="file-validator__kind" data-kind={file.kind}>
+                                        {file.kind}
+                                    </span>
                                 </div>
                                 <DisplayObject value={file} />
                             </li>

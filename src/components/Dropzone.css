@@ -76,6 +76,16 @@
     font-size: 0.8rem;
 }
 
+.dropzone__supported-formats {
+    margin: 12px 0 0;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
 .selected-files {
     margin-top: 20px;
     padding: 20px;

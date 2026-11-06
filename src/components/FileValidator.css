@@ -95,13 +95,40 @@
 	overflow-wrap: anywhere;
 }
 
-.file-validator__validity {
+.file-validator__validity,
+.file-validator__kind {
 	padding: 2px 8px;
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	font-size: 11px;
 	font-weight: 600;
 	line-height: 20px;
+}
+
+.file-validator__kind {
+	color: var(--text);
+	background: color-mix(in srgb, currentColor 8%, var(--bg));
+	border-color: color-mix(in srgb, currentColor 25%, var(--bg));
+}
+
+.file-validator__kind[data-kind='FASTQ'] {
+	color: light-dark(#1d4ed8, #93c5fd);
+}
+
+.file-validator__kind[data-kind='ALIGNMENT'] {
+	color: light-dark(#0f766e, #5eead4);
+}
+
+.file-validator__kind[data-kind='VARIANT'] {
+	color: light-dark(#a16207, #fcd34d);
+}
+
+.file-validator__kind[data-kind='IDAT'] {
+	color: light-dark(#be185d, #f9a8d4);
+}
+
+.file-validator__kind[data-kind='POD5'] {
+	color: light-dark(#6d28d9, #c4b5fd);
 }
 
 .file-validator__validity[data-validity='VALID'] {

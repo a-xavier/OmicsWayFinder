@@ -9,10 +9,9 @@ import {type VariantFile  } from '../biotypes'
 export default async function validateVariant(file: File, setProcessing: (value: boolean) => void): Promise<{isValid: boolean, result: VariantFile}> {
    setProcessing(true);
 
-    const CLI = await new Aioli(["bcftools/1.10", "coreutils/head/8.32"])
+    const CLI = await new Aioli(["bcftools/1.10"])
     const path = await CLI.mount(file);
     // bcftools 1.10 does not have the head command
-    // use head to get first 64kb of the file and use that on bcftools for the body
     const header = await CLI.exec(`bcftools view -h ${path[0]}`);
     
     // Get firs 64kb of file directly, use bytes and then use 

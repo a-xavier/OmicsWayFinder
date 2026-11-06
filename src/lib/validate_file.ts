@@ -11,6 +11,7 @@ import validateAlignment from './ValidationFunctions/validate_alignment'
 import validatePod5 from './ValidationFunctions/validate_pod5'
 import validateVariant from './ValidationFunctions/validate_variant'
 import validateIdat from './ValidationFunctions/validate_idat'
+import validateFasta from './ValidationFunctions/validate_fasta'
 
 export const validExtensions = [
     // ALignment
@@ -23,8 +24,10 @@ export const validExtensions = [
     'pod5',
     // Fastq 
     'fastq', 'fq', 'fastq.gz', 'fq.gz',
-    // Other files
+    // Fasta files
     'fasta', 'fa', 'fna', 'fasta.gz', 'fa.gz', 'fna.gz',
+    // TODO others
+    // 'bed'
 
 ]
 export async function validateFile(file: File, notify: NotifyFunction, setProcessing: (value: boolean) => void): Promise<BioFile> {
@@ -55,10 +58,10 @@ export async function validateFile(file: File, notify: NotifyFunction, setProces
     case file.name.endsWith('.fastq') || file.name.endsWith('.fq') || file.name.endsWith('.fastq.gz') || file.name.endsWith('.fq.gz'):
         ({ isValid: valid, result: resultBiofile } = await validateFastq(file, setProcessing))
         break;
-    // TODO: Make fasta validation
-    // case file.name.endsWith('.fasta') || file.name.endsWith('.fa') || file.name.endsWith('.fna') || file.name.endsWith('.fasta.gz') || file.name.endsWith('.fa.gz') || file.name.endsWith('.fna.gz'):
-    //     // Handle fasta files
-    //     break;
+
+    case file.name.endsWith('.fasta') || file.name.endsWith('.fa') || file.name.endsWith('.fna') || file.name.endsWith('.fasta.gz') || file.name.endsWith('.fa.gz') || file.name.endsWith('.fna.gz'):
+        ({ isValid: valid, result: resultBiofile } = await validateFasta(file, setProcessing))
+        break;
    }
 
     // Preserve the validator result's correlated kind and format.
