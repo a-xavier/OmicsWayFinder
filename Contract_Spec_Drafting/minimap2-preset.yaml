@@ -1,0 +1,78 @@
+odc_version: "0.1"
+id: "odc:minimap2-preset"
+description: >
+  Illustrative minimap2 preset selection for genomic DNA reads using mean
+  read length and mean Phred quality. These heuristics are not validated
+  evidence of sequencing platform or a general alignment recommendation.
+
+input_format:
+  reads:
+    id: "http://edamontology.org/format_1930"
+    label: "FASTQ"
+  reference:
+    id: "http://edamontology.org/format_1929"
+    label: "FASTA"
+
+action:
+  id: "http://edamontology.org/operation_3198"
+  label: "Read mapping"
+
+software:
+  name: "minimap2"
+  url: "https://github.com/lh3/minimap2"
+
+output_format:
+  id: "http://edamontology.org/format_2573"
+  label: "SAM"
+
+thresholds:
+  read_length_bp: 600
+  quality_phred: 30
+
+sources:
+  stats:
+    mean_read_length:
+      provider: "OmicsWayfinder"
+      output: "stats.readLength"
+      calculation: "Arithmetic mean of sequence lengths across parsed FASTQ reads."
+      scope: "Parsed reads from the supplied file slice; not necessarily the whole file."
+      unit: "bp"
+    mean_quality:
+      provider: "OmicsWayfinder"
+      output: "stats.readQuality"
+      calculation: "Arithmetic mean of per-read mean Phred scores, decoded as Phred+33."
+      scope: "Parsed reads from the supplied file slice; not necessarily the whole file."
+      unit: "Phred"
+  thresholds:
+    read_length_bp:
+      kind: "draft_choice"
+      explanation: "600 bp is an illustrative contract-author heuristic, not a minimap2 requirement."
+    quality_phred:
+      kind: "draft_choice"
+      explanation: "Q30 is an illustrative contract-author heuristic, not a validated platform boundary."
+
+arguments:
+  -a: true
+
+rules:
+  - when: "stats.mean_read_length < thresholds.read_length_bp and stats.mean_quality >= thresholds.quality_phred"
+    arguments:
+      -x: "sr"
+    explanation: "Reads are shorter than 600 bp with mean quality at least Q30."
+
+  - when: "stats.mean_read_length > thresholds.read_length_bp and stats.mean_quality < thresholds.quality_phred"
+    arguments:
+      -x: "map-ont"
+    explanation: "Reads are longer than 600 bp with mean quality below Q30."
+
+  - when: "stats.mean_read_length > thresholds.read_length_bp and stats.mean_quality > thresholds.quality_phred"
+    arguments:
+      -x: "map-hifi"
+    explanation: "Reads are longer than 600 bp with mean quality above Q30."
+
+  - when: "otherwise"
+    arguments:
+      -x: "sr"
+    explanation: >
+      No earlier rule matched. Use the requested short-read fallback,
+      including length exactly 600 bp or long reads at exactly Q30.
