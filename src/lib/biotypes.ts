@@ -107,6 +107,21 @@ export interface FastaFile extends BioFileBase<"FASTA", "FASTA" | "FASTA.GZ" | "
   };
 }
 
+export interface BedFile extends BioFileBase<"BED", "BED" | "BED.GZ" | "INVALID"> {
+  stats?: {
+    regionCount?: number;
+    coveredBases?: number; // total number of bases covered by the regions
+    // Column format is
+    // chrom, start, end - compulsory
+    // 
+    regions: {
+      chrom: string;
+      start: number;
+      end: number;
+    }[];
+  };
+}
+
 export type BioFile =
   | AlignmentFile
   | FastqFile
@@ -114,6 +129,7 @@ export type BioFile =
   | Pod5File
   | IdatFile
   | FastaFile
+  | BedFile
   | BioFileBase<"UNKNOWN", "UNKNOWN">;
 
 /* ============================================================================

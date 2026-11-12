@@ -1,0 +1,66 @@
+.home-page > p {
+  width: 100%;
+  max-width: none;
+   text-align: justify;
+}
+
+.app-page > .home-intro {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+.home-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.home-tool {
+  --tool-color: light-dark(#0f766e, #5eead4);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--tool-color);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tool-color) 4%, var(--bg));
+  text-decoration: none;
+  transition: border-color 150ms ease;
+}
+
+.home-tool[data-tool='contracts'] {
+  --tool-color: light-dark(#1d4ed8, #93c5fd);
+}
+
+.home-tool[data-tool='analyser'] {
+  --tool-color: light-dark(#a16207, #fcd34d);
+}
+
+.home-tool:hover {
+  border-color: var(--tool-color);
+}
+
+.home-tool__status {
+  margin-bottom: 12px;
+  color: var(--tool-color);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.home-tool h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.home-tool p {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}

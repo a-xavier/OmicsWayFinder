@@ -3,7 +3,7 @@
     width: min(100%, 720px);
     margin: 40px auto;
     font-family: Inter, system-ui, sans-serif;
-    color: #172033;
+    color: var(--text-h);
 }
 
 .dropzone {
@@ -14,9 +14,9 @@
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    border: 2px dashed #a8b4c8;
-    border-radius: 18px;
-    background: #f8fafc;
+    border: 2px dashed var(--control-border);
+    border-radius: 0px;
+    background: var(--social-bg);
     cursor: pointer;
     text-align: center;
     transition: border-color 160ms ease, background 160ms ease,
@@ -25,15 +25,13 @@
 
 .dropzone:hover,
 .dropzone:focus-visible {
-    border-color: #2563eb;
-    background: #eff6ff;
-    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
-    outline: none;
+    border-color: var(--focus);
+    background: color-mix(in srgb, var(--focus) 6%, var(--bg));
 }
 
 .dropzone--dragging {
-    border-color: #2563eb;
-    background: #dbeafe;
+    border-color: var(--focus);
+    background: color-mix(in srgb, var(--focus) 12%, var(--bg));
     transform: scale(1.01);
 }
 
@@ -52,9 +50,9 @@
     margin-bottom: 16px;
     display: grid;
     place-items: center;
-    border-radius: 14px;
-    background: #dbeafe;
-    color: #1d4ed8;
+    border-radius: 0px;
+    background: color-mix(in srgb, var(--focus) 12%, var(--bg));
+    color: var(--focus);
     font-size: 28px;
     font-weight: 700;
 }
@@ -68,7 +66,10 @@
 .dropzone__hint,
 .dropzone__formats {
     margin: 8px 0 0;
-    color: #64748b;
+    color: var(--text);
+}
+
+.dropzone__hint {
     font-size: 0.92rem;
 }
 
@@ -89,9 +90,9 @@
 .selected-files {
     margin-top: 20px;
     padding: 20px;
-    border: 1px solid #dbe2ea;
-    border-radius: 14px;
-    background: white;
+    border: 1px solid var(--border);
+    border-radius: 0px;
+    background: var(--bg);
     box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
 }
 
@@ -111,7 +112,7 @@
     justify-content: space-between;
     gap: 16px;
     padding: 10px 0;
-    border-top: 1px solid #edf1f5;
+    border-top: 1px solid var(--border);
     font-size: 0.9rem;
 }
 
@@ -121,5 +122,5 @@
 
 .selected-files li span:last-child {
     flex-shrink: 0;
-    color: #64748b;
+    color: var(--text);
 }

@@ -1,0 +1,210 @@
+.analyser-page > h2 {
+  margin: 28px 0 12px;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.analyser-page > p {
+  max-width: 70ch;
+  margin: 0 0 12px;
+}
+
+.opfs-storage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 24px;
+}
+
+.opfs-storage-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.opfs-explorer {
+  max-width: 880px;
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  text-align: left;
+}
+
+.opfs-explorer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.opfs-explorer__header h2 {
+  margin: 0 0 4px;
+  color: var(--text-h);
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.opfs-explorer__header p,
+.opfs-explorer > p {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.opfs-explorer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.opfs-explorer__actions button,
+.opfs-folder-actions button,
+.opfs-storage-heading button {
+  min-height: 40px;
+  padding: 7px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.opfs-explorer__actions button:hover:not(:disabled),
+.opfs-folder-actions button:hover:not(:disabled),
+.opfs-storage-heading button:hover:not(:disabled) {
+  border-color: var(--focus);
+  background: var(--social-bg);
+}
+
+.opfs-explorer__actions button:disabled,
+.opfs-folder-actions button:disabled,
+.opfs-storage-heading button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.opfs-storage-heading .opfs-danger-button,
+.opfs-delete-button {
+  border-color: light-dark(#b91c1c, #fca5a5);
+  color: light-dark(#991b1b, #fecaca);
+}
+
+.opfs-storage-heading .opfs-danger-button:hover:not(:disabled),
+.opfs-delete-button:hover:not(:disabled) {
+  border-color: light-dark(#991b1b, #fecaca);
+  background: light-dark(#fef2f2, #321c20);
+}
+
+.opfs-folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 8px 8px 28px;
+}
+
+.opfs-folder-actions button {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.opfs-tree {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.opfs-tree .opfs-tree {
+  margin: 0 0 0 8px;
+  border-left: 1px solid var(--border);
+}
+
+.opfs-tree li {
+  min-width: 0;
+}
+
+.opfs-tree details > summary,
+.opfs-file-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.opfs-tree details > summary {
+  cursor: pointer;
+}
+
+.opfs-tree details > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.opfs-entry-kind,
+.opfs-file-size {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.opfs-file-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.opfs-delete-button {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.opfs-empty,
+.opfs-empty-folder {
+  padding: 12px 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.opfs-empty-folder {
+  margin: 0;
+}
+
+.opfs-message {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.opfs-error {
+  margin: 12px 0;
+  color: light-dark(#b91c1c, #fca5a5);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .opfs-explorer {
+    padding: 12px;
+  }
+
+  .opfs-explorer__header {
+    display: grid;
+  }
+}

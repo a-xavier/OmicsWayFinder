@@ -1,20 +1,22 @@
 .pcspec-detector {
     position: absolute;
-    top: 20px;
+    top: 100px;
     left: 20px;
+    text-align: left;
     font-family: Arial, sans-serif;
     font-size: 12px;
     line-height: 1.3;
-    display: grid;
+    /* display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 3px 12px;
+    gap: 3px 12px; */
     max-width: calc(100vw - 40px);
     box-sizing: border-box;
-    background-color: #f9f9f9;
+    background-color: var(--social-bg);
+    color: var(--text-h);
     padding: 10px 12px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
 }
 
 .pcspec-detector > p {
@@ -30,9 +32,9 @@
 .pcspec-detector > p:last-child {
     margin-top: 3px;
     font-size: 11px;
-    color: #595959;
+    color: var(--text);
 }
 
-.highlight {
+.pcspec-detector .highlight {
     font-weight: bold;
 }

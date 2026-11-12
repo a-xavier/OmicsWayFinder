@@ -35,7 +35,12 @@ export default function FileValidator({ files, clearSelectedFiles }: { files: Fi
 
     return (
         <div className="file-validator" aria-busy={processing}>
-            {processing && <p className="file-validator__processing" role="status">Processing...</p>}
+            {processing && (
+                <p className="file-validator__processing" role="status">
+                    <span className="file-validator__spinner" aria-hidden="true" />
+                    Processing...
+                </p>
+            )}
 
             {!processing && files && files.length > 0 && (
                 <div className="file-validator__actions">

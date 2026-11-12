@@ -27,9 +27,10 @@ export const validExtensions = [
     // Fasta files
     'fasta', 'fa', 'fna', 'fasta.gz', 'fa.gz', 'fna.gz',
     // TODO others
-    // 'bed'
+    // bed | bigwig | GFF / GTF
 
 ]
+
 export async function validateFile(file: File, notify: NotifyFunction, setProcessing: (value: boolean) => void): Promise<BioFile> {
 
    if (validExtensions.some(ext => file.name.endsWith(ext))) {
@@ -77,3 +78,4 @@ export async function validateFile(file: File, notify: NotifyFunction, setProces
         invalidReason: valid ? "" : "invalid extension",
     }
 }
+

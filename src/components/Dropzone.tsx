@@ -127,7 +127,7 @@ export default function Dropzone({
 }
 
 // TODO: Use this helper when restoring the selected-files display or remove it.
-function _formatFileSize(bytes: number) {
+export function _formatFileSize(bytes: number) {
   if (bytes === 0) return "0 B";
 
   const units = ["B", "KB", "MB", "GB", "TB"];
