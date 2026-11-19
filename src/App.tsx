@@ -68,7 +68,7 @@ function App() {
       </header>
 
       <main id="app-main" ref={mainRef} tabIndex={-1}>
-        
+
         {page === 'home' && (
           <HomePage />
         )}

@@ -1,0 +1,123 @@
+.accessibility-page > h2,
+.accessibility-guidance h2,
+.wcag-checklist h2 {
+  margin: 24px 0 10px;
+  color: var(--text-h);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.accessibility-guidance,
+.wcag-checklist {
+  max-width: 100%;
+  margin-top: 28px;
+}
+
+.accessibility-guidance ul {
+  display: grid;
+  gap: 8px;
+  max-width: 78ch;
+  margin: 12px 0 0;
+  padding-left: 22px;
+  text-align: left;
+}
+
+.accessibility-guidance li {
+  font-size: 14px;
+}
+
+.wcag-checklist__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wcag-checklist__header h2 {
+  margin-top: 0;
+}
+
+.wcag-checklist__header p {
+  max-width: 68ch;
+  margin: 0;
+  font-size: 14px;
+}
+
+.wcag-disclaimer {
+  max-width: 80ch;
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--focus);
+  background: var(--social-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.wcag-group {
+  border-top: 1px solid var(--border);
+}
+
+.wcag-group:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.wcag-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-height: 44px;
+  padding: 8px 4px;
+  color: var(--text-h);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wcag-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wcag-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.wcag-item__criterion {
+  min-width: 0;
+  color: var(--text-h);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.wcag-item__criterion strong {
+  margin-right: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.wcag-item__level {
+  justify-self: center;
+  color: var(--text);
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .wcag-item {
+    grid-template-columns: minmax(0, 1fr) 56px;
+  }
+
+  .wcag-item__criterion {
+    font-size: 12px;
+  }
+}

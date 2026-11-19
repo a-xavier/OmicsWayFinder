@@ -1,0 +1,154 @@
+.mayo-tester {
+  max-width: 880px;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  text-align: left;
+}
+
+.mayo-tester h2 {
+  margin: 0 0 8px;
+  color: var(--text-h);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.mayo-tester h3 {
+  margin: 0;
+  color: var(--text-h);
+  font-size: 16px;
+}
+
+.app-page .mayo-tester__note {
+  max-width: 76ch;
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+
+.app-page .mayo-tester__isolation {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+
+.mayo-tester__isolation.is-ok {
+  color: light-dark(#155d37, #9ce0b8);
+}
+
+.mayo-tester__isolation.is-error {
+  color: light-dark(#991b1b, #fecaca);
+}
+
+.mayo-tester__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.mayo-tester button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+  font-family: var(--mono, monospace);
+  cursor: pointer;
+}
+
+.mayo-tester button:hover:not(:disabled) {
+  border-color: var(--focus);
+  background: var(--social-bg);
+}
+
+.mayo-tester button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.mayo-tester__selected {
+  color: var(--text);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.mayo-tester__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.mayo-tester__fields label {
+  display: grid;
+  flex: 1 1 240px;
+  gap: 4px;
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.mayo-tester__fields input {
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+}
+
+.mayo-tester__output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.mayo-tester__output {
+  max-height: 420px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  list-style: none;
+}
+
+.mayo-tester__output li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mayo-tester__output li:last-child {
+  border-bottom: none;
+}
+
+.mayo-tester__meta {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mayo-tester__output .is-ok .mayo-tester__meta {
+  color: light-dark(#155d37, #9ce0b8);
+}
+
+.mayo-tester__output .is-error .mayo-tester__meta {
+  color: light-dark(#991b1b, #fecaca);
+}
+
+.mayo-tester__output pre {
+  margin: 4px 0 0;
+  color: var(--text-h);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mayo-tester__empty {
+  color: var(--text);
+  font-size: 14px;
+}

@@ -9,7 +9,9 @@ The goal is to connect file evidence, experimental context, explicit scientific
 decisions and accessible local execution, while making uncertainty and limitations
 visible.
 
-**[Try the browser prototype](https://a-xavier.github.io/OmicsWayFinder/)**
+## Try the live prototype
+
+# **[Open OmicsWayfinder in your browser](https://a-xavier.github.io/OmicsWayFinder/)** 
 
 ## Research Aims
 
