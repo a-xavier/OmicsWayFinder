@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { MayoFS } from "./mayo-fs";
+import { MayoTools } from "./mayo-tools";
 import { MayoTree } from "./mayo-tree";
 import type { MayoRequest, MayoResponse, MayoResult } from "./mayo.protocol";
 
@@ -8,6 +9,7 @@ declare const self: DedicatedWorkerGlobalScope;
 
 const tree = new MayoTree();
 const fs = new MayoFS();
+const tools = new MayoTools(fs);
 
 /** Process one operation at a time so root and snapshot changes cannot race. */
 async function execute(request: MayoRequest): Promise<MayoResult> {
@@ -30,6 +32,10 @@ async function execute(request: MayoRequest): Promise<MayoResult> {
     case "removeFile":
       fs.removeFile(request.path);
       return { type: "done" };
+    case "loadTools":
+      return { type: "tools", tools: await tools.load(request.tools) };
+    case "exec":
+      return { type: "exec", result: await tools.exec(request.program, request.args, request.redirects) };
   }
 }
 

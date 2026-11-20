@@ -24,6 +24,10 @@ function getPage(): Page {
 
 function App() {
   const [page, setPage] = useState<Page>(getPage)
+  // The Analyser stays mounted once visited (hidden on other pages), so its Mayo worker,
+  // a running exec and the test bench state survive switching pages.
+  const [analyserMounted, setAnalyserMounted] = useState(page === 'analyser')
+  if (page === 'analyser' && !analyserMounted) setAnalyserMounted(true)
   const mainRef = useRef<HTMLElement>(null)
   const initialRender = useRef(true)
 
@@ -94,8 +98,8 @@ function App() {
           <ContractPage />
         )}
 
-        {page === 'analyser' && (
-          <section className="app-page">
+        {analyserMounted && (
+          <section className="app-page" hidden={page !== 'analyser'}>
             <AnalyserPage />
           </section>
         )}

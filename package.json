@@ -4,12 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "build:wasm": "cargo build --manifest-path wasm/file_generator/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/file_generator/pkg --out-name file_generator wasm/file_generator/target/wasm32-unknown-unknown/release/file_generator.wasm",
-    "predev": "npm run build:wasm",
     "dev": "vite",
-    "build": "npm run build:wasm && tsc -b && vite build",
+    "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "fetch:tools": "node scripts/fetch-biowasm-tools.mjs"
   },
   "dependencies": {
     "@biowasm/aioli": "^3.2.3",

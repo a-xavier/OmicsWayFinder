@@ -1,34 +1,42 @@
 .mayo-tester {
+  display: grid;
+  gap: 20px;
   max-width: 880px;
-  margin-top: 24px;
-  padding: 20px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
+  margin-top: 32px;
   text-align: left;
 }
 
 .mayo-tester h2 {
   margin: 0 0 8px;
   color: var(--text-h);
-  font-size: 20px;
+  font-size: 22px;
   letter-spacing: 0;
 }
 
 .mayo-tester h3 {
   margin: 0;
   color: var(--text-h);
-  font-size: 16px;
+  font-size: 17px;
+}
+
+.mayo-tester code {
+  /* The global code style is a padded inline-flex box; keep inline code light in running text. */
+  display: inline;
+  padding: 1px 5px;
+  border-radius: 0;
+  font-size: 0.9em;
+}
+
+.mayo-tester__header p {
+  margin: 0 0 8px;
 }
 
 .app-page .mayo-tester__note {
-  max-width: 76ch;
-  margin: 0 0 14px;
-  font-size: 14px;
+  max-width: 70ch;
+  font-size: 15px;
 }
 
 .app-page .mayo-tester__isolation {
-  margin: 0 0 14px;
   font-size: 14px;
 }
 
@@ -40,86 +48,157 @@
   color: light-dark(#991b1b, #fecaca);
 }
 
+.mayo-tester__panel {
+  display: grid;
+  gap: 14px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+}
+
+.app-page .mayo-tester__hint,
+.app-page .mayo-tester__selected {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.mayo-tester__selected strong {
+  color: var(--text-h);
+}
+
 .mayo-tester__row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin: 12px 0;
 }
 
 .mayo-tester button {
-  min-height: 44px;
-  padding: 8px 14px;
-  border: 1px solid var(--control-border);
-  border-radius: 4px;
-  background: var(--bg);
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--social-bg);
   color: var(--text-h);
   font: inherit;
-  font-family: var(--mono, monospace);
+  font-size: 15px;
   cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
 }
 
 .mayo-tester button:hover:not(:disabled) {
+  border-color: var(--control-border);
+}
+
+.mayo-tester button.mayo-tester__primary {
   border-color: var(--focus);
-  background: var(--social-bg);
+  background: var(--focus);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.mayo-tester button.mayo-tester__primary:hover:not(:disabled) {
+  border-color: var(--focus);
+  filter: brightness(1.1);
+}
+
+.mayo-tester button.mayo-tester__quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+}
+
+.mayo-tester button.mayo-tester__quiet:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--text-h);
 }
 
 .mayo-tester button:disabled {
   cursor: not-allowed;
-  opacity: 0.65;
-}
-
-.mayo-tester__selected {
-  color: var(--text);
-  font-size: 14px;
-  overflow-wrap: anywhere;
+  opacity: 0.55;
 }
 
 .mayo-tester__fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin: 12px 0;
+  gap: 14px;
 }
 
-.mayo-tester__fields label {
+.mayo-tester__fields label,
+.mayo-tester__command label {
   display: grid;
   flex: 1 1 240px;
-  gap: 4px;
+  align-content: start;
+  gap: 6px;
   color: var(--text-h);
   font-size: 14px;
+  font-weight: 500;
 }
 
-.mayo-tester__fields input {
-  min-height: 40px;
-  padding: 6px 10px;
-  border: 1px solid var(--control-border);
-  border-radius: 4px;
+.mayo-tester input:not([type='checkbox']),
+.mayo-tester select {
+  box-sizing: border-box;
+  height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 0;
   background: var(--bg);
   color: var(--text-h);
   font: inherit;
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.mayo-tester input:not([type='checkbox']):hover,
+.mayo-tester select:hover {
+  border-color: var(--control-border);
+}
+
+.mayo-tester__command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.mayo-tester__command input {
+  font-family: var(--mono);
+}
+
+.mayo-tester__command button {
+  min-height: 44px;
+}
+
+.mayo-tester__visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .mayo-tester__output-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 18px;
 }
 
 .mayo-tester__output {
-  max-height: 420px;
-  margin: 8px 0 0;
+  max-height: 480px;
+  margin: 0;
   padding: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   list-style: none;
 }
 
 .mayo-tester__output li {
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -140,15 +219,181 @@
   color: light-dark(#991b1b, #fecaca);
 }
 
+.mayo-tester__output li.is-error {
+  border-left: 4px solid light-dark(#dc2626, #f87171);
+  background: light-dark(#fef2f2, #3b1212);
+}
+
 .mayo-tester__output pre {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   color: var(--text-h);
   font-size: 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.mayo-tester__empty {
+.app-page .mayo-tester__empty {
+  margin: 0;
+  padding: 10px 14px;
   color: var(--text);
   font-size: 14px;
+}
+
+.mayo-tester__tools {
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--social-bg);
+}
+
+.mayo-tester__tool {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.mayo-tester__tool:last-child {
+  border-bottom: none;
+}
+
+.mayo-tester__tool label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.mayo-tester__tool-name strong {
+  color: var(--text-h);
+  font-family: var(--mono);
+}
+
+.mayo-tester__tool-name span {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mayo-tester__tool em {
+  padding: 0 6px;
+  border-radius: 0;
+  background: light-dark(#dcfce7, #14532d);
+  color: light-dark(#166534, #bbf7d0);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.mayo-tester__loaded h4 {
+  margin: 0 0 8px;
+  color: var(--text-h);
+  font-size: 15px;
+}
+
+.mayo-tester__loaded ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mayo-tester__loaded li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.mayo-tester__loaded strong {
+  color: var(--text-h);
+  font-family: var(--mono);
+}
+
+.mayo-tester__loaded em {
+  padding: 0 6px;
+  background: light-dark(#dbeafe, #1e3a8a);
+  color: light-dark(#1e40af, #bfdbfe);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.mayo-tester__programs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding-left: 26px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.mayo-tester__description {
+  padding-left: 26px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mayo-tester__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--social-bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.mayo-tester__status.is-running {
+  /* Stay visible while scrolling to the output. */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  border-color: var(--focus);
+  color: var(--text-h);
+}
+
+.mayo-tester__status > span:not(.mayo-tester__spinner, .mayo-tester__elapsed) {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mayo-tester__elapsed {
+  flex: none;
+  white-space: nowrap;
+  font-family: var(--mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.mayo-tester__spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--control-border);
+  border-top-color: var(--focus);
+  border-radius: 0;
+  animation: mayo-tester-spin 0.8s linear infinite;
+}
+
+@keyframes mayo-tester-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mayo-tester__spinner {
+    animation-duration: 2.4s;
+  }
 }

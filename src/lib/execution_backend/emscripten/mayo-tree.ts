@@ -38,7 +38,8 @@ export class MayoTree {
     for await (const entry of directory.values()) {
       if (entry.kind === "directory") {
         children.push(await this.buildTree(entry));
-      } else {
+      } else if (!entry.name.endsWith(".crswap")) {
+        // .crswap files are Chrome's temporary copies of files being written.
         children.push({ name: entry.name, kind: "file" });
       }
     }

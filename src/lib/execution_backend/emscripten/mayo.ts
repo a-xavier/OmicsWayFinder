@@ -1,6 +1,48 @@
-import type { MayoDirectory, MayoOperation, MayoResponse, MayoResult } from "./mayo.protocol";
+import type {
+  MayoDirectory,
+  MayoExecResult,
+  MayoOperation,
+  MayoRedirects,
+  MayoResponse,
+  MayoResult,
+  MayoToolConfig,
+  MayoToolInfo,
+  MayoToolSpec,
+} from "./mayo.protocol";
 
-export type { MayoDirectory, MayoEntry, MayoFile } from "./mayo.protocol";
+export type { MayoDirectory, MayoEntry, MayoExecResult, MayoFile, MayoRedirects, MayoToolInfo, MayoToolSpec } from "./mayo.protocol";
+
+/** Default location of tool files, as in Aioli: `<cdn>/<tool>/<version>/<program>.js`. */
+export const MAYO_CDN = "https://biowasm.com/cdn/v3";
+
+// Shell operators that are not implemented; rejected rather than passed to the tool as arguments.
+const UNSUPPORTED_OPERATORS = new Set(["|", "||", "&&", "&", ";", "<"]);
+
+/**
+ * Split a command string on whitespace (no quoting or globs) and take out redirections:
+ * `> file`, `>> file`, `2> file`, `2>> file` (also written without the space, as `>file`).
+ */
+export function parseCommand(command: string): { program: string; args: string[]; redirects: MayoRedirects } {
+  const words = command.trim().split(/\s+/).filter(Boolean);
+  const args: string[] = [];
+  const redirects: MayoRedirects = {};
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (UNSUPPORTED_OPERATORS.has(word)) throw new Error(`The shell operator "${word}" is not supported yet.`);
+    const match = /^([12]?)(>>?)(.*)$/.exec(word);
+    if (!match) {
+      args.push(word);
+      continue;
+    }
+    const [, fd, operator, attached] = match;
+    if (attached.startsWith("&")) throw new Error(`"${word}" is not supported yet.`);
+    const path = attached || words[++i];
+    if (!path || /^[<>|&;]/.test(path)) throw new Error(`Expecting a file name after "${fd}${operator}".`);
+    redirects[fd === "2" ? "stderr" : "stdout"] = { path, append: operator === ">>" };
+  }
+  const [program = "", ...rest] = args;
+  return { program, args: rest, redirects };
+}
 
 type PendingRequest = {
   resolve: (result: MayoResult) => void;
@@ -52,23 +94,56 @@ export class Mayo {
     return this.requestTree({ type: "refreshTree" });
   }
 
-  /** Placeholder for reading a file from the selected root. */
+  /** Read a whole file from the selected root. */
   async readFile(path: string): Promise<Uint8Array> {
     const result = await this.request({ type: "readFile", path });
     if (result.type !== "bytes") throw new Error("Unexpected Mayo worker response.");
     return result.data;
   }
 
-  /** Placeholder for writing a file to the selected root. */
+  /**
+   * Create or replace a whole file in the selected root. Parent folders must exist.
+   * The previous contents stay intact if the write fails. Call refreshTree() to see the change.
+   */
   async writeFile(path: string, data: Uint8Array): Promise<void> {
     const result = await this.request({ type: "writeFile", path, data });
     if (result.type !== "done") throw new Error("Unexpected Mayo worker response.");
   }
 
-  /** Placeholder for removing a file from the selected root. */
+  /** Remove one file from the selected root. Directories are refused. Call refreshTree() to see the change. */
   async removeFile(path: string): Promise<void> {
     const result = await this.request({ type: "removeFile", path });
     if (result.type !== "done") throw new Error("Unexpected Mayo worker response.");
+  }
+
+  /**
+   * Download and initialize tools, using Aioli's syntax:
+   * `loadTools(["samtools/1.10"])` or
+   * `loadTools([{ tool: "samtools", version: "1.21", urlPrefix: "tools/samtools/1.21" }])`.
+   * Can be called again to add tools. Returns every loaded tool.
+   */
+  async loadTools(tools: MayoToolSpec[]): Promise<MayoToolInfo[]> {
+    const result = await this.request({ type: "loadTools", tools: tools.map(resolveTool) });
+    if (result.type !== "tools") throw new Error("Unexpected Mayo worker response.");
+    return result.tools;
+  }
+
+  /**
+   * Run a loaded program, like Aioli: `exec("samtools view -h file.bam")` splits on whitespace
+   * (no quoting, pipes or globs) and supports `>`, `>>`, `2>` and `2>>` (see parseCommand);
+   * `exec("samtools", ["view", "-h", "my file.bam"], { stdout: { path: "out.sam", append: false } })`
+   * passes arguments and redirections exactly. Resolves with stdout, stderr and the exit code;
+   * a redirected stream goes to its file and comes back empty. A non-zero exit code does not reject.
+   */
+  async exec(command: string, args?: string[], redirects?: MayoRedirects): Promise<MayoExecResult> {
+    let program = command.trim();
+    if (!args) {
+      ({ program, args, redirects } = parseCommand(command));
+    }
+    if (!program) throw new Error("Expecting a command.");
+    const result = await this.request({ type: "exec", program, args, redirects });
+    if (result.type !== "exec") throw new Error("Unexpected Mayo worker response.");
+    return result.result;
   }
 
   /** Stop the worker and reject requests that have not completed. */
@@ -104,4 +179,32 @@ export class Mayo {
     for (const request of this.pending.values()) request.reject(error);
     this.pending.clear();
   }
+}
+
+/**
+ * Apply Aioli's defaults to a tool spec. Runs on the main thread so relative urlPrefix values
+ * resolve against the page (including the GitHub Pages base path), not the worker script.
+ */
+function resolveTool(spec: MayoToolSpec): MayoToolConfig {
+  let config: Exclude<MayoToolSpec, string>;
+  if (typeof spec === "string") {
+    const parts = spec.split("/");
+    if (parts.length !== 2 && parts.length !== 3) {
+      throw new Error(`Expecting "<tool>/<version>" or "<tool>/<program>/<version>", got "${spec}".`);
+    }
+    config = { tool: parts[0], program: parts.length === 3 ? parts[1] : undefined, version: parts[parts.length - 1] };
+  } else {
+    config = spec;
+  }
+  if (!config.tool || !config.version) throw new Error("Each tool needs a tool name and a version.");
+
+  const prefix = config.urlPrefix ?? `${MAYO_CDN}/${config.tool}/${config.version}`;
+  return {
+    tool: config.tool,
+    version: config.version,
+    program: config.program ?? config.tool,
+    urlPrefix: new URL(prefix, document.baseURI).href.replace(/\/+$/, ""),
+    loading: config.loading ?? "eager",
+    reinit: config.reinit ?? false,
+  };
 }

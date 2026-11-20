@@ -11,8 +11,6 @@ node_modules
 dist
 dist-ssr
 *.local
-/wasm/file_generator/target/
-/src/wasm/file_generator/pkg/
 
 # Editor directories and files
 .vscode/*

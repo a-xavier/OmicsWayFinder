@@ -125,14 +125,14 @@ export default function AccessibilityPage() {
   return (
     <div className="accessibility-page">
       <h1>Accessibility</h1>
-      <p>
+      
         OmicsWayFinder aims to make bioinformatics accessible to all users.
         This means two main things:
         <ul>
           <li>Ensuring the interface is usable by people with a wide range of abilities and disabilities. This means following the  <a href="https://www.w3.org/TR/WCAG22/" target="_blank" rel="noopener noreferrer">Web Content Accessibility Guidelines (WCAG) 2.2</a></li>
           <li>Providing clear guidance and support for users with varying levels of expertise in bioinformatics. This means exposing important decision while keeping fine-tuning parameters hidden but always available</li>
         </ul>    
-      </p>
+      
 
       <section className="accessibility-guidance" aria-labelledby="accessible-analysis-title">
         <h2 id="accessible-analysis-title">Accessible analysis for different experience levels</h2>
