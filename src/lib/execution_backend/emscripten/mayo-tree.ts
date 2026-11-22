@@ -1,3 +1,4 @@
+import { LINK_MAX_SIZE, parseLink } from "./mayo-url-fs";
 import type { MayoDirectory, MayoEntry } from "./mayo.protocol";
 
 /** Worker-side folder scanner: one selected root handle and a display snapshot of its contents. */
@@ -32,7 +33,18 @@ export class MayoTree {
     return tree;
   }
 
-  /** Recursively enumerate directory handles without opening or reading files. */
+  /** The URL if the file is a link (only small files are read). */
+  private async linkTarget(entry: FileSystemFileHandle): Promise<string | undefined> {
+    try {
+      const file = await entry.getFile();
+      if (file.size === 0 || file.size > LINK_MAX_SIZE) return undefined;
+      return parseLink(await file.text());
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Recursively enumerate directory handles. Only small files are read, to spot URL links. */
   private async buildTree(directory: FileSystemDirectoryHandle): Promise<MayoDirectory> {
     const children: MayoEntry[] = [];
     for await (const entry of directory.values()) {
@@ -40,7 +52,7 @@ export class MayoTree {
         children.push(await this.buildTree(entry));
       } else if (!entry.name.endsWith(".crswap")) {
         // .crswap files are Chrome's temporary copies of files being written.
-        children.push({ name: entry.name, kind: "file" });
+        children.push({ name: entry.name, kind: "file", url: await this.linkTarget(entry) });
       }
     }
     return { name: directory.name, kind: "directory", children };

@@ -1,84 +1,146 @@
 /**
- * Loads biowasm Emscripten tools inside the Mayo worker and runs their main(), following Aioli.
+ * The coordinator's tool registry and pipeline runner (runs in the Mayo worker).
  *
- * Filesystem layout (same as Aioli):
- * - The first non-reinit tool is the "base" module. Its in-memory filesystem holds /shared,
- *   and /shared/data is the working directory.
- * - Every other tool mounts the base module's /shared with PROXYFS, so all tools see the same files.
- * - A tool's bundled sample data (for example /samtools/examples) is also mounted at
- *   /shared/<tool> in the base filesystem so other tools can use it.
+ * A command is a list of pipelines joined by `&&`: each pipeline runs only if the previous one
+ * succeeded, as in a shell.
  *
- * - When a folder is selected (and the page is cross-origin isolated), it is mounted
- *   at /shared/data with MAYOFS, replacing the in-memory folder there.
+ * Each loaded program gets a "warm" tool worker (mayo-tool.worker.ts): one Emscripten instance,
+ * downloaded, compiled and initialized once, then reused for every run. A command is a pipeline
+ * of one or more stages; every stage runs in its own worker at the same time as the others,
+ * connected stdout to stdin by pipes (mayo-pipe.ts). A program that appears twice in a pipeline
+ * gets an extra instance, which reuses the compiled WebAssembly.Module.
+ *
+ * Tool workers share the selected folder through the I/O worker (MayoIO), each with its own
+ * connection; /tmp and the tools' sample data are private to each worker, as for processes.
+ * The coordinator itself never calls main(), so it stays free to start workers, forward live
+ * stderr and cancel a run.
  */
 
-import { createMAYOFS, type EmscriptenFSInternals, type MAYOFS } from "./mayo-emscripten-fs";
-import type { MayoFS } from "./mayo-fs";
-import type { MayoExecResult, MayoRedirect, MayoRedirects, MayoToolConfig, MayoToolInfo } from "./mayo.protocol";
-
-const DIR_SHARED = "/shared";
-const DIR_DATA = "/shared/data";
-/**
- * Most characters of stdout and of stderr kept per run. The whole output is held in memory and
- * copied to the page, so `samtools view big.bam` (gigabytes of SAM text) would crash the tab.
- * Large outputs belong in a file (`-o`).
- */
-const OUTPUT_LIMIT = 16 * 1024 * 1024;
-
-/** The parts of an Emscripten FS that Mayo uses. */
-type EmscriptenFS = {
-  mkdir(path: string): void;
-  chdir(path: string): void;
-  cwd(): string;
-  mount(type: unknown, options: Record<string, unknown>, mountpoint: string): void;
-  unmount(mountpoint: string): void;
-  analyzePath(path: string): { exists: boolean };
-  open(path: string, flags: string): { fd: number };
-  close(stream: unknown): void;
-  streams: unknown[];
-} & EmscriptenFSInternals;
-
-type EmscriptenModule = {
-  callMain(args: string[]): void;
-  FS: EmscriptenFS;
-  PROXYFS: unknown;
-  // Flushes C stdio buffers; fflush(0) flushes all. Not exported by every build.
-  _fflush?: (stream: number) => number;
-};
-
-/** biowasm glue defines a MODULARIZE factory: `Module(overrides)` resolves to the module. */
-type EmscriptenFactory = (overrides: Record<string, unknown>) => Promise<EmscriptenModule>;
+import { closePipe, createPipe } from "./mayo-pipe";
+import type { MayoFS, MayoIO } from "./mayo-fs";
+import type { MayoToolRequest, MayoToolResponse, MayoToolRunResult } from "./mayo-tool.protocol";
+import { URL_PATTERN, type RemoteChecker } from "./mayo-url-fs";
+import type { MayoExecResult, MayoStage, MayoStageResult, MayoToolConfig, MayoToolInfo } from "./mayo.protocol";
 
 type Tool = MayoToolConfig & {
-  module?: EmscriptenModule;
-  stdout: string;
-  stderr: string;
-  // Characters dropped past OUTPUT_LIMIT in the current run.
-  stdoutDropped: number;
-  stderrDropped: number;
-  exitCode: number;
+  /** Compiled by the first instance; later instances only instantiate it. */
+  wasm?: WebAssembly.Module;
+  /** The instance kept between runs. */
+  warm?: Promise<ToolInstance>;
 };
+
+type RunRequest = Extract<MayoToolRequest, { type: "run" }>;
+
+/** The running command; `stop` is set while one of its pipelines runs. */
+type CommandRun = { cancelled: boolean; stop?: () => void };
+
+/** Exit code reported for a stopped run, as a shell reports Ctrl-C (128 + SIGINT). */
+const CANCELLED_EXIT_CODE = 130;
+
+/** One tool worker, as seen from the coordinator. */
+class ToolInstance {
+  private readonly worker: Worker;
+  private readonly client: number;
+  private readonly io: MayoIO;
+  private finishRun: ((result: MayoToolRunResult) => void) | undefined;
+  private stopped = false;
+
+  private constructor(worker: Worker, client: number, io: MayoIO) {
+    this.worker = worker;
+    this.client = client;
+    this.io = io;
+  }
+
+  /** Start a worker and load the tool in it. Stores the compiled module on `tool`. */
+  static async start(tool: Tool, source: string, io: MayoIO): Promise<ToolInstance> {
+    const { client, connection } = await io.connect();
+    const worker = new Worker(new URL("./mayo-tool.worker.ts", import.meta.url), { type: "module" });
+    const instance = new ToolInstance(worker, client, io);
+    try {
+      const wasm = await new Promise<WebAssembly.Module>((resolve, reject) => {
+        worker.addEventListener("message", (event: MessageEvent<MayoToolResponse>) => {
+          if (event.data.type === "ready") resolve(event.data.wasm);
+          else if (event.data.type === "failed") reject(new Error(`Could not load ${tool.program}: ${event.data.message}`));
+        });
+        worker.addEventListener("error", event => reject(new Error(`Could not load ${tool.program}: ${event.message}`)));
+        worker.postMessage({ type: "setup", tool: configOf(tool), source, wasm: tool.wasm, io: connection } satisfies MayoToolRequest, [connection.port]);
+      });
+      tool.wasm ??= wasm;
+    } catch (error) {
+      instance.terminate();
+      throw error;
+    }
+    worker.addEventListener("message", (event: MessageEvent<MayoToolResponse>) => {
+      if (event.data.type === "done") instance.settle(event.data.result);
+    });
+    worker.addEventListener("error", event => {
+      event.preventDefault();
+      instance.settle(failedRun(`[Mayo] the ${tool.program} worker failed: ${event.message}`, 1));
+    });
+    return instance;
+  }
+
+  /** Run main() once. Resolves (never rejects) when it exits, crashes or is terminated. */
+  run(request: RunRequest, onStderr?: (text: string) => void): Promise<MayoToolRunResult> {
+    if (this.stopped) return Promise.resolve(failedRun("[Mayo] cancelled", CANCELLED_EXIT_CODE));
+    const listener = (event: MessageEvent<MayoToolResponse>) => {
+      if (event.data.type === "stderr") onStderr?.(event.data.text);
+    };
+    this.worker.addEventListener("message", listener);
+    return new Promise<MayoToolRunResult>(resolve => {
+      this.finishRun = result => {
+        this.worker.removeEventListener("message", listener);
+        resolve(result);
+      };
+      this.worker.postMessage(request satisfies MayoToolRequest);
+    });
+  }
+
+  /** Stop the worker, even in the middle of main(). Its unfinished file writes are discarded. */
+  terminate(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.worker.terminate();
+    this.io.disconnect(this.client);
+    this.settle(failedRun("[Mayo] cancelled", CANCELLED_EXIT_CODE));
+  }
+
+  private settle(result: MayoToolRunResult): void {
+    const finish = this.finishRun;
+    this.finishRun = undefined;
+    finish?.(result);
+  }
+}
+
+function configOf({ tool, version, program, urlPrefix, loading, reinit }: Tool): MayoToolConfig {
+  return { tool, version, program, urlPrefix, loading, reinit };
+}
+
+function failedRun(message: string, exitCode: number): MayoToolRunResult {
+  return { stdout: "", stderr: `${message}\n`, exitCode, brokenPipe: false, crashed: true };
+}
 
 export class MayoTools {
   private readonly tools: Tool[] = [];
-  private base: Tool | undefined;
-  // One download and evaluation per glue script, reused for lazy loading and reinit.
-  private readonly factories = new Map<string, Promise<EmscriptenFactory>>();
-  private mayofs: MAYOFS | undefined;
-  private folderMounted = false;
-
+  // One download per glue script, reused for every instance.
+  private readonly sources = new Map<string, Promise<string>>();
+  private current: CommandRun | undefined;
+  private readonly io: MayoIO;
   private readonly fs: MayoFS;
+  private readonly checker: RemoteChecker;
 
-  constructor(fs: MayoFS) {
+  constructor(io: MayoIO, fs: MayoFS, checker: RemoteChecker) {
+    this.io = io;
     this.fs = fs;
+    this.checker = checker;
   }
 
-  /** Add tools and initialize the eager ones. Can be called again to add more tools. */
+  /** Add tools and start the eager ones. Can be called again to add more tools. */
   async load(configs: MayoToolConfig[]): Promise<MayoToolInfo[]> {
     // exec finds tools by program name, so each program can only be loaded once. Loading the same
     // tool version again is skipped; the same program name from another tool or version is an error.
     const known = new Map<string, { tool: string; version: string }>(this.tools.map(tool => [tool.program, tool]));
-    const fresh: MayoToolConfig[] = [];
+    const added: Tool[] = [];
     for (const config of configs) {
       const existing = known.get(config.program);
       if (existing?.tool === config.tool && existing.version === config.version) continue;
@@ -86,266 +148,232 @@ export class MayoTools {
         throw new Error(`Program ${config.program} is already loaded from ${existing.tool} ${existing.version}.`);
       }
       known.set(config.program, config);
-      fresh.push(config);
+      added.push({ ...config });
     }
-
-    const added: Tool[] = fresh.map(config => ({ ...config, stdout: "", stderr: "", stdoutDropped: 0, stderrDropped: 0, exitCode: 0 }));
     if (added.length === 0) return this.list();
-    const previousBase = this.base;
-    if (!this.base) {
-      // The base module's filesystem must stay stable, so it cannot be reinitialized or lazy.
-      const base = added.find(tool => !tool.reinit);
-      if (!base) throw new Error("At least one tool must have reinit: false to own the shared filesystem.");
-      base.loading = "eager";
-      this.base = base;
-    }
+    await this.io.start();
 
     this.tools.push(...added);
     try {
-      // Set up the base first: the other modules mount its filesystem.
-      if (this.base !== previousBase) await this.setup(this.base);
-      await Promise.all(added.filter(tool => tool.loading === "eager" && !tool.module).map(tool => this.setup(tool)));
-      this.shareSampleData();
+      await Promise.all(added.filter(tool => tool.loading === "eager").map(tool => this.warm(tool)));
     } catch (error) {
       // Forget the whole batch so the caller can fix the specs and retry.
-      this.tools.splice(this.tools.length - added.length, added.length);
-      this.base = previousBase;
+      for (const tool of added) void tool.warm?.then(instance => instance.terminate(), () => {});
+      this.tools.splice(this.tools.indexOf(added[0]), added.length);
       throw error;
     }
     return this.list();
   }
 
   list(): MayoToolInfo[] {
-    return this.tools.map(tool => ({
-      tool: tool.tool,
-      version: tool.version,
-      program: tool.program,
-      urlPrefix: tool.urlPrefix,
-      loading: tool.loading,
-      reinit: tool.reinit,
-      loaded: tool.module !== undefined,
-      base: tool === this.base,
-    }));
+    return this.tools.map(tool => ({ ...configOf(tool), loaded: tool.wasm !== undefined }));
   }
 
-  /** Run a program's main() with the given arguments and collect its output and exit code. */
-  async exec(program: string, args: string[], redirects: MayoRedirects = {}): Promise<MayoExecResult> {
-    const tool = this.tools.find(candidate => candidate.program === program);
-    if (!tool) throw new Error(`Program ${program} not found. Load it with loadTools first.`);
-    if (!tool.module) {
-      await this.setup(tool);
-      this.shareSampleData();
-    }
-    const module = tool.module!;
-    this.mountFolder();
-
-    tool.stdout = "";
-    tool.stderr = "";
-    tool.stdoutDropped = 0;
-    tool.stderrDropped = 0;
-    tool.exitCode = 0;
-    // Like a shell: open the redirection files first and do not run the program if one fails.
-    const opened = redirectStdio(module.FS, redirects);
-    if (opened.error) {
-      tool.stderr += `${opened.error}\n`;
-      tool.exitCode = 1;
-    } else {
-      try {
-        // Synchronous: runs main() to completion. The exit code arrives through the quit hook.
-        module.callMain(args);
-      } catch (error) {
-        // A crash (not a normal exit): the glue already called quit(1).
-        tool.exitCode ||= 1;
-        tool.stderr += `${error instanceof Error ? error.message : String(error)}\n`;
-      }
-    }
-    // A file on stdout is fully buffered by the C library; write what is left before closing it.
-    try {
-      module._fflush?.(0);
-    } catch {
-      // The module crashed; there is nothing more to save.
-    }
-    for (const error of flushStdio(module.FS, redirects)) {
-      tool.stderr += `[Mayo] could not save ${error}\n`;
-      tool.exitCode ||= 1;
-    }
-    // Save files the program left open; a failed save fails the run.
-    for (const error of this.mayofs?.closeOpenFiles() ?? []) {
-      tool.stderr += `[Mayo] could not save ${error}\n`;
-      tool.exitCode ||= 1;
-    }
-    for (const [stream, dropped] of [["stdout", tool.stdoutDropped], ["stderr", tool.stderrDropped]] as const) {
-      if (dropped > 0) {
-        tool.stderr += `[Mayo] ${stream} was cut after ${OUTPUT_LIMIT / 1024 / 1024} MiB; ${dropped} more characters were dropped. Narrow the output (for example samtools view -c, -H or a region) or write it to a file with -o or >.\n`;
-      }
-    }
-    const result = { stdout: tool.stdout, stderr: tool.stderr, exitCode: tool.exitCode };
-
-    // Some tools keep global state between runs; start them fresh (the base module is never reinit).
-    if (tool.reinit && tool !== this.base) {
-      tool.module = undefined;
-      await this.setup(tool);
-      this.shareSampleData();
-    }
-    return result;
+  /** Stop the running exec, if any. Returns false if nothing was running. */
+  cancel(): boolean {
+    if (!this.current) return false;
+    this.current.cancelled = true;
+    this.current.stop?.();
+    return true;
   }
 
   /**
-   * (Re)mount the selected folder at /shared/data before each run. Remounting drops the nodes
-   * Emscripten cached during the previous run, so files changed outside the app are seen,
-   * and it picks up a folder selected after the tools were loaded.
+   * Run pipelines joined by `&&`: each starts only if the previous one exited with 0.
+   * `onStderr` receives each stage's stderr as it is printed; stages are numbered across the
+   * whole command (`a | b && c`: 0, 1, 2).
    */
-  private mountFolder(): void {
-    const FS = this.base!.module!.FS;
-    if (this.folderMounted) {
-      FS.unmount(DIR_DATA);
-      this.folderMounted = false;
+  async exec(pipelines: MayoStage[][], onStderr?: (stage: number, text: string) => void): Promise<MayoExecResult> {
+    if (pipelines.length === 0 || pipelines.some(stages => stages.length === 0)) throw new Error("Expecting a command.");
+    // Check every program first, rather than failing after earlier pipelines have run.
+    const tools = pipelines.map(stages => stages.map(stage => {
+      const tool = this.tools.find(candidate => candidate.program === stage.program);
+      if (!tool) throw new Error(`Program ${stage.program} not found. Load it with loadTools first.`);
+      return tool;
+    }));
+    if (this.current) throw new Error("A command is already running.");
+    const run: CommandRun = { cancelled: false };
+    this.current = run;
+    try {
+      const results: MayoExecResult[] = [];
+      let first = 0;
+      for (const [index, stages] of pipelines.entries()) {
+        const offset = first;
+        const result = await this.runPipeline(stages, tools[index], run, onStderr && ((stage, text) => onStderr(offset + stage, text)));
+        result.stages.forEach(stage => { stage.pipeline = index; });
+        results.push(result);
+        first += stages.length;
+        if (result.exitCode !== 0 || run.cancelled) break;
+      }
+      return chain(results);
+    } finally {
+      this.current = undefined;
     }
-    if (!this.fs.ready) return;
-    this.mayofs ??= createMAYOFS(FS, this.fs);
-    FS.mount(this.mayofs.type, {}, DIR_DATA);
-    this.folderMounted = true;
   }
 
-  /** Download (once), instantiate and wire up one Emscripten module. */
-  private async setup(tool: Tool): Promise<void> {
-    const factory = await this.factory(`${tool.urlPrefix}/${tool.program}.js`);
-    const module = await factory({
-      // argv[0]; otherwise it would be "./this.program".
-      thisProgram: tool.program,
-      // Where the glue fetches <program>.wasm and <program>.data from.
-      locateFile: (path: string) => `${tool.urlPrefix}/${path}`,
-      print: (line: string) => {
-        if (tool.stdout.length + line.length < OUTPUT_LIMIT) tool.stdout += `${line}\n`;
-        else tool.stdoutDropped += line.length + 1;
-      },
-      printErr: (line: string) => {
-        if (tool.stderr.length + line.length < OUTPUT_LIMIT) tool.stderr += `${line}\n`;
-        else tool.stderrDropped += line.length + 1;
-      },
-      // No stdin yet: reading it returns end-of-file.
-      stdin: () => null,
-      // Every exit goes through quit(status): main() returning, exit(), or a crash.
-      // Rethrowing keeps the glue's own control flow intact.
-      quit: (status: number, toThrow: unknown) => {
-        tool.exitCode = status;
-        throw toThrow;
-      },
+  /** Run one pipeline: every stage at the same time, each in its own worker, stdout to stdin. */
+  private async runPipeline(
+    stages: MayoStage[],
+    tools: Tool[],
+    run: CommandRun,
+    onStderr?: (stage: number, text: string) => void,
+  ): Promise<MayoExecResult> {
+    // Like a shell's failed redirection: a stage with an unusable URL does not run, and its
+    // neighbours see end of file or EPIPE.
+    const failures = await Promise.all(stages.map(async stage => {
+      for (const url of new Set(stage.args.flatMap(arg => arg.match(URL_PATTERN) ?? []))) {
+        try {
+          await this.checker.check(url);
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
+      return undefined;
+    }));
+
+    // The warm instance for a program's first stage; extra instances for repeats.
+    const instances: (ToolInstance | undefined)[] = [];
+    const isWarm: boolean[] = [];
+    const used = new Set<Tool>();
+    try {
+      for (const [index, tool] of tools.entries()) {
+        if (failures[index] !== undefined) continue;
+        isWarm[index] = !used.has(tool);
+        used.add(tool);
+        instances[index] = isWarm[index] ? await this.warm(tool) : await this.spawn(tool);
+      }
+    } catch (error) {
+      instances.forEach((instance, index) => { if (!isWarm[index]) instance?.terminate(); });
+      throw error;
+    }
+
+    const pipes = stages.slice(1).map(() => createPipe());
+    run.stop = () => {
+      for (const instance of instances) instance?.terminate();
+      for (const pipe of pipes) closePipe(pipe);
+    };
+    // Cancelled while the URLs were checked or the workers started: stopped instances return at once.
+    if (run.cancelled) run.stop();
+    let results: MayoToolRunResult[];
+    try {
+      results = await Promise.all(stages.map((stage, index) => {
+        const stdin = index > 0 ? pipes[index - 1] : undefined;
+        const stdout = index < pipes.length ? pipes[index] : undefined;
+        const instance = instances[index];
+        if (!instance) {
+          if (stdin) closePipe(stdin);
+          if (stdout) closePipe(stdout);
+          return { stdout: "", stderr: `${failures[index]}\n`, exitCode: 1, brokenPipe: false, crashed: false };
+        }
+        return instance.run(
+          { type: "run", args: stage.args, redirects: stage.redirects, stdin, stdout, folder: this.fs.folder, liveStderr: onStderr !== undefined },
+          text => onStderr?.(index, text),
+        ).then(result => {
+          // A crashed or stopped worker could not close its pipe ends.
+          if (result.crashed) {
+            if (stdin) closePipe(stdin);
+            if (stdout) closePipe(stdout);
+          }
+          return result;
+        });
+      }));
+    } finally {
+      run.stop = undefined;
+    }
+    const cancelled = run.cancelled;
+
+    // Keep warm instances that ended normally; replace the others with fresh ones.
+    instances.forEach((instance, index) => {
+      if (!instance) return;
+      const result = results[index];
+      const tool = tools[index];
+      if (isWarm[index] && !tool.reinit && !result.crashed && !result.brokenPipe && !cancelled) return;
+      instance.terminate();
+      if (isWarm[index]) {
+        tool.warm = undefined;
+        // Loading the replacement starts now; the next run waits for it.
+        void this.warm(tool).catch(() => {});
+      }
     });
 
-    const FS = module.FS;
-    if (tool === this.base) {
-      FS.mkdir(DIR_SHARED);
-      FS.mkdir(DIR_DATA);
-      FS.chdir(DIR_DATA);
-    } else {
-      const baseFS = this.base!.module!.FS;
-      FS.mkdir(DIR_SHARED);
-      FS.mount(module.PROXYFS, { root: DIR_SHARED, fs: baseFS }, DIR_SHARED);
-      // Start in the same folder as the base module.
-      FS.chdir(baseFS.cwd());
+    return combine(stages, results, cancelled);
+  }
+
+  /** The instance kept between runs, started if needed. */
+  private warm(tool: Tool): Promise<ToolInstance> {
+    if (!tool.warm) {
+      const starting = this.spawn(tool);
+      tool.warm = starting;
+      starting.catch(() => {
+        if (tool.warm === starting) tool.warm = undefined;
+      });
     }
-    tool.module = module;
+    return tool.warm;
+  }
+
+  private async spawn(tool: Tool): Promise<ToolInstance> {
+    return ToolInstance.start(tool, await this.source(`${tool.urlPrefix}/${tool.program}.js`), this.io);
   }
 
   /**
-   * Module workers cannot use importScripts, so fetch the classic glue script and evaluate it.
-   * fetch uses CORS, which the biowasm CDN allows, so this also works under COEP require-corp.
+   * The tool's glue script, downloaded once. Module workers cannot use importScripts, so tool
+   * workers evaluate this text. fetch uses CORS, which the biowasm CDN allows, so this also works
+   * under COEP require-corp.
    */
-  private factory(url: string): Promise<EmscriptenFactory> {
-    let factory = this.factories.get(url);
-    if (!factory) {
-      factory = (async () => {
+  private source(url: string): Promise<string> {
+    let source = this.sources.get(url);
+    if (!source) {
+      source = (async () => {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`Could not download ${url}: HTTP ${response.status}`);
         // Dev servers and single-page hosts may answer a missing file with index.html.
         if (response.headers.get("content-type")?.includes("text/html")) {
           throw new Error(`Could not download ${url}: the server returned an HTML page, not the tool's JavaScript.`);
         }
-        const source = await response.text();
-        // The glue declares `var Module = <factory>`; return it from the evaluated function.
-        return new Function(`${source}\n;return Module;`)() as EmscriptenFactory;
+        return response.text();
       })();
-      factory.catch(() => this.factories.delete(url));
-      this.factories.set(url, factory);
+      source.catch(() => this.sources.delete(url));
+      this.sources.set(url, source);
     }
-    return factory;
-  }
-
-  /** Mount each loaded tool's sample data folder (e.g. /samtools) at /shared/<tool> in the base filesystem. */
-  private shareSampleData(): void {
-    const base = this.base?.module;
-    if (!base) return;
-    for (const tool of this.tools) {
-      if (!tool.module) continue;
-      const source = `/${tool.tool}`;
-      const target = `${DIR_SHARED}/${tool.tool}`;
-      if (!tool.module.FS.analyzePath(source).exists || base.FS.analyzePath(target).exists) continue;
-      base.FS.mkdir(target);
-      base.FS.mount(base.PROXYFS, { root: source, fs: tool.module.FS }, target);
-    }
+    return source;
   }
 }
 
-/** Short messages for errors from opening a redirection file, as a shell prints them. */
-const OPEN_ERRORS: Record<number, string> = {
-  2: "Permission denied",
-  31: "Is a directory",
-  44: "No such file or directory",
-  54: "Not a directory",
-  63: "Operation not permitted",
-};
-
-/**
- * Point stdout (fd 1) and/or stderr (fd 2) at files, relative to the working directory.
- * Writes then go straight to the file, byte for byte, instead of through print/printErr.
- * Returns a shell-style error message if a file cannot be opened; streams already
- * redirected are left for flushStdio to close.
- */
-function redirectStdio(FS: EmscriptenFS, redirects: MayoRedirects): { error?: string } {
-  const targets: [number, MayoRedirect | undefined][] = [[1, redirects.stdout], [2, redirects.stderr]];
-  for (const [fd, redirect] of targets) {
-    if (!redirect) continue;
-    try {
-      FS.close(FS.streams[fd]);
-      // open() takes the lowest free descriptor, which is now fd.
-      const stream = FS.open(redirect.path, redirect.append ? "a" : "w");
-      if (stream.fd !== fd) {
-        FS.close(stream);
-        throw new Error(`could not use it as descriptor ${fd}`);
-      }
-    } catch (error) {
-      const errno = (error as { errno?: number }).errno;
-      const message = errno !== undefined
-        ? OPEN_ERRORS[errno] ?? `error ${errno}`
-        : error instanceof Error ? error.message : String(error);
-      return { error: `mayo: ${redirect.path}: ${message}` };
-    }
+function combine(stages: MayoStage[], results: MayoToolRunResult[], cancelled: boolean): MayoExecResult {
+  const stageResults: MayoStageResult[] = results.map((result, index) => {
+    const stage: MayoStageResult = { program: stages[index].program, pipeline: 0, exitCode: result.exitCode, stderr: result.stderr };
+    if (result.remote) stage.remote = result.remote;
+    if (result.brokenPipe) stage.brokenPipe = true;
+    return stage;
+  });
+  const failed = results.find(result => result.exitCode !== 0 && !result.brokenPipe);
+  const remotes = results.flatMap(result => result.remote ? [result.remote] : []);
+  const combined: MayoExecResult = {
+    stdout: results[results.length - 1].stdout,
+    stderr: results.map(result => result.stderr).join(""),
+    exitCode: cancelled ? CANCELLED_EXIT_CODE : failed?.exitCode ?? 0,
+    stages: stageResults,
+  };
+  if (remotes.length > 0) {
+    combined.remote = remotes.reduce((sum, remote) => ({ requests: sum.requests + remote.requests, bytes: sum.bytes + remote.bytes }));
   }
-  return {};
+  if (cancelled) combined.cancelled = true;
+  return combined;
 }
 
-/**
- * Close and reopen stdout/stderr so buffered output (lines without a trailing newline) is
- * printed now rather than at the next run, and the next run starts with fresh streams.
- * Closing a redirection file saves it; returns one message per file that could not be saved.
- */
-function flushStdio(FS: EmscriptenFS, redirects: MayoRedirects): string[] {
-  const errors: string[] = [];
-  const targets: [number, MayoRedirect | undefined][] = [[1, redirects.stdout], [2, redirects.stderr]];
-  for (const [fd, redirect] of targets) {
-    const stream = FS.streams[fd];
-    // The program (or a failed redirection) may have closed it already.
-    if (!stream) continue;
-    try {
-      FS.close(stream);
-    } catch (error) {
-      if (redirect) errors.push(`${redirect.path}: ${error instanceof Error ? error.message : String(error)}`);
-      // A failed close may leave the descriptor taken.
-      FS.streams[fd] = null;
-    }
+/** The results of pipelines joined by `&&`, as one result: the exit code is the last one run. */
+function chain(results: MayoExecResult[]): MayoExecResult {
+  if (results.length === 1) return results[0];
+  const last = results[results.length - 1];
+  const remotes = results.flatMap(result => result.remote ? [result.remote] : []);
+  const combined: MayoExecResult = {
+    stdout: results.map(result => result.stdout).join(""),
+    stderr: results.map(result => result.stderr).join(""),
+    exitCode: last.exitCode,
+    stages: results.flatMap(result => result.stages),
+  };
+  if (remotes.length > 0) {
+    combined.remote = remotes.reduce((sum, remote) => ({ requests: sum.requests + remote.requests, bytes: sum.bytes + remote.bytes }));
   }
-  FS.streams[1] = FS.open("/dev/stdout", "w");
-  FS.streams[2] = FS.open("/dev/stderr", "w");
-  return errors;
+  if (last.cancelled) combined.cancelled = true;
+  return combined;
 }

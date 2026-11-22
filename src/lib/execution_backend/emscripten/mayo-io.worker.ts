@@ -1,10 +1,12 @@
 /// <reference lib="webworker" />
 
 /**
- * I/O worker: performs asynchronous File System Access calls on behalf of the tool worker.
+ * I/O worker: performs asynchronous File System Access calls and HTTP range requests on behalf
+ * of every Mayo client (each tool worker, and the coordinator).
  *
- * The tool worker posts a request, then blocks in Atomics.wait. This worker stays free to
- * await browser file APIs, writes the reply into shared memory, and wakes the tool worker.
+ * A client posts a request on its own MessagePort, then blocks in Atomics.wait. This worker stays
+ * free to await browser APIs, writes the reply into that client's shared memory, and wakes it.
+ * Requests from different clients run concurrently.
  */
 
 import {
@@ -14,25 +16,28 @@ import {
   STATE_DONE,
   STATUS_ERROR,
   STATUS_OK,
+  type MayoIOControl,
   type MayoIOEntry,
+  type MayoIOEvent,
   type MayoIOOpenRead,
-  type MayoIOReady,
   type MayoIORequest,
-  type MayoIOSetup,
   type MayoIOStat,
 } from "./mayo-io.protocol";
+import { RemoteCache } from "./mayo-remote-cache";
 
 declare const self: DedicatedWorkerGlobalScope;
 
-let control: Int32Array | undefined;
-let data: Uint8Array | undefined;
+type Client = { port: MessagePort; control: Int32Array; data: Uint8Array };
+
+const clients = new Map<number, Client>();
 let root: FileSystemDirectoryHandle | undefined;
+const remote = new RemoteCache();
 
 // Open read handles by id: a File snapshot, so reads don't call getFile() each time.
-const readers = new Map<number, File>();
+const readers = new Map<number, { client: number; file: File }>();
 // Open write streams by id. Data goes to a temporary file (<name>.crswap in a real folder)
 // and replaces the target only on close.
-const writers = new Map<number, FileSystemWritableFileStream>();
+const writers = new Map<number, { client: number; writer: FileSystemWritableFileStream }>();
 let nextId = 1;
 
 function splitPath(path: string): string[] {
@@ -46,7 +51,7 @@ function splitPath(path: string): string[] {
  * could escape the selected folder. Parent directories must already exist.
  */
 async function resolveParent(path: string): Promise<{ parent: FileSystemDirectoryHandle; name: string }> {
-  if (!root) throw new Error("No directory is mounted.");
+  if (!root) throw new Error("Mayo must be initialized with a directory first.");
   const parts = splitPath(path);
   if (parts.length === 0) throw new Error(`Invalid path: ${path}`);
   let parent = root;
@@ -64,7 +69,7 @@ async function getFileHandle(path: string, create = false): Promise<FileSystemFi
 
 /** Get a file or directory handle; "" is the selected folder. */
 async function getEntry(path: string): Promise<FileSystemFileHandle | FileSystemDirectoryHandle> {
-  if (!root) throw new Error("No directory is mounted.");
+  if (!root) throw new Error("Mayo must be initialized with a directory first.");
   if (splitPath(path).length === 0) return root;
   const { parent, name } = await resolveParent(path);
   try {
@@ -83,17 +88,31 @@ function json(value: unknown): Uint8Array {
 function getReader(id: number): File {
   const reader = readers.get(id);
   if (!reader) throw new Error(`Unknown read handle: ${id}`);
-  return reader;
+  return reader.file;
 }
 
 function getWriter(id: number): FileSystemWritableFileStream {
   const writer = writers.get(id);
   if (!writer) throw new Error(`Unknown write handle: ${id}`);
-  return writer;
+  return writer.writer;
 }
 
-/** Return the reply bytes for one request; they must fit in the shared data buffer. */
-async function handle(request: MayoIORequest): Promise<Uint8Array> {
+/** Discard writes in progress (their temporary files) and forget read handles: of one client, or all. */
+async function dropHandles(client?: number): Promise<void> {
+  for (const [id, reader] of readers) {
+    if (client === undefined || reader.client === client) readers.delete(id);
+  }
+  const aborted: Promise<void>[] = [];
+  for (const [id, writer] of writers) {
+    if (client !== undefined && writer.client !== client) continue;
+    writers.delete(id);
+    aborted.push(writer.writer.abort().catch(() => {}));
+  }
+  await Promise.all(aborted);
+}
+
+/** Return the reply bytes for one request; they must fit in the client's data buffer. */
+async function handle(clientId: number, client: Client, request: MayoIORequest): Promise<Uint8Array> {
   switch (request.type) {
     case "stat": {
       const entry = await getEntry(request.path);
@@ -111,7 +130,7 @@ async function handle(request: MayoIORequest): Promise<Uint8Array> {
     case "openRead": {
       const file = await (await getFileHandle(request.path)).getFile();
       const id = nextId++;
-      readers.set(id, file);
+      readers.set(id, { client: clientId, file });
       return json({ id, size: file.size, mtime: file.lastModified } satisfies MayoIOOpenRead);
     }
     case "read": {
@@ -124,13 +143,13 @@ async function handle(request: MayoIORequest): Promise<Uint8Array> {
       const handle = await getFileHandle(request.path, true);
       const writer = await handle.createWritable({ keepExistingData: request.keepExistingData ?? false });
       const id = nextId++;
-      writers.set(id, writer);
+      writers.set(id, { client: clientId, writer });
       return json({ id });
     }
     case "write": {
       // slice() copies out of shared memory: file streams reject SharedArrayBuffer views,
       // and the tool worker reuses the buffer for the next chunk.
-      const bytes = data!.slice(0, request.length);
+      const bytes = client.data.slice(0, request.length);
       const writer = getWriter(request.id);
       if (request.position === undefined) await writer.write(bytes);
       else await writer.write({ type: "write", position: request.position, data: bytes });
@@ -200,36 +219,66 @@ async function handle(request: MayoIORequest): Promise<Uint8Array> {
       await parent.removeEntry(name);
       return new Uint8Array();
     }
+    case "remoteStat":
+      return json(await remote.stat(request.url));
+    case "remoteRead":
+      return remote.read(clientId, request.url, request.size, request.offset, Math.min(request.length, client.data.byteLength), request.ahead);
+    case "remoteStats":
+      return json(remote.takeStats(clientId));
   }
 }
 
-function reply(status: number, bytes: Uint8Array): void {
-  if (!control || !data) return;
+function reply(client: Client, status: number, bytes: Uint8Array): void {
+  const { control, data } = client;
   if (bytes.byteLength > data.byteLength) {
     status = STATUS_ERROR;
     bytes = new TextEncoder().encode(`RangeError: Reply too large for the shared buffer (${bytes.byteLength} bytes).`);
   }
-  const length = bytes.byteLength;
-  data.set(bytes.subarray(0, length));
+  data.set(bytes);
   Atomics.store(control, CONTROL_STATUS, status);
-  Atomics.store(control, CONTROL_LENGTH, length);
+  Atomics.store(control, CONTROL_LENGTH, bytes.byteLength);
   Atomics.store(control, CONTROL_STATE, STATE_DONE);
   Atomics.notify(control, CONTROL_STATE);
 }
 
-self.addEventListener("message", async (event: MessageEvent<MayoIORequest | MayoIOSetup>) => {
+function connect(id: number, port: MessagePort, buffer: SharedArrayBuffer): void {
+  const client: Client = { port, control: new Int32Array(buffer, 0, 4), data: new Uint8Array(buffer, 16) };
+  clients.set(id, client);
+  port.addEventListener("message", async (event: MessageEvent<MayoIORequest>) => {
+    let status = STATUS_OK;
+    let bytes: Uint8Array;
+    try {
+      bytes = await handle(id, client, event.data);
+    } catch (error) {
+      status = STATUS_ERROR;
+      bytes = new TextEncoder().encode(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    }
+    // A client that was disconnected meanwhile is no longer waiting.
+    if (clients.get(id) === client) reply(client, status, bytes);
+  });
+  port.start();
+}
+
+self.addEventListener("message", async (event: MessageEvent<MayoIOControl>) => {
   const message = event.data;
-  if (message.type === "setup") {
-    control = new Int32Array(message.buffer, 0, 4);
-    data = new Uint8Array(message.buffer, 16);
-    root = message.directory;
-    self.postMessage({ type: "ready" } satisfies MayoIOReady);
-    return;
-  }
-  try {
-    reply(STATUS_OK, await handle(message));
-  } catch (error) {
-    const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    reply(STATUS_ERROR, new TextEncoder().encode(text));
+  switch (message.type) {
+    case "root":
+      await dropHandles();
+      root = message.directory;
+      self.postMessage({ type: "rooted" } satisfies MayoIOEvent);
+      return;
+    case "connect":
+      connect(message.client, message.port, message.buffer);
+      return;
+    case "disconnect": {
+      const client = clients.get(message.client);
+      clients.delete(message.client);
+      client?.port.close();
+      remote.forget(message.client);
+      await dropHandles(message.client);
+      return;
+    }
   }
 });
+
+self.postMessage({ type: "ready" } satisfies MayoIOEvent);

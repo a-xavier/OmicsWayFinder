@@ -6,7 +6,7 @@ Run existing bioinformatics tools compiled with Emscripten in the browser withou
 
 ## Mayo
 
-`Mayo` is the Emscripten backend runtime, inspired by [Aioli](https://github.com/biowasm/aioli). Unlike Aioli, it works directly in a folder the user selects on their own computer instead of an in-memory filesystem. It currently scans the folder, reads, writes and removes files, and loads and runs biowasm tools. Tools see the selected folder at `/shared/data` (their working directory) and can read and write it, so relative paths such as `samtools index reads.bam` work on the real files.
+`Mayo` is the Emscripten backend runtime, inspired by [Aioli](https://github.com/biowasm/aioli). Unlike Aioli, it works directly in a folder the user selects on their own computer instead of an in-memory filesystem. It currently scans the folder, reads, writes and removes files, and loads and runs biowasm tools, alone or as streaming pipelines (`minimap2 … | samtools sort …`). Tools see the selected folder at `/shared/data` (their working directory) and can read and write it, so relative paths such as `samtools index reads.bam` work on the real files.
 
 ### Usage
 
@@ -20,6 +20,11 @@ const bytes = await mayo.readFile("reads/sample.fastq");
 const updated = await mayo.refreshTree();          // rescan after external changes
 await mayo.loadTools(["samtools/1.10"]);           // biowasm CDN, Aioli syntax
 const { stdout, stderr, exitCode } = await mayo.exec("samtools --version");
+await mayo.exec("samtools view -h reads.bam | samtools sort -o sorted.bam -", {
+  onStderr: (text, stage) => console.log(stage, text),   // live stderr, optional
+});
+await mayo.exec("samtools sort -o s.bam in.sam && samtools index s.bam");  // index only if sort succeeded
+await mayo.cancel();                               // stop the running exec, if any
 mayo.close();                                      // stop the workers, reject pending calls
 ```
 
@@ -31,9 +36,13 @@ mayo.close();                                      // stop the workers, reject p
 | `readFile(path)` | Done | Reads a whole file relative to the folder. Needs cross-origin isolation. |
 | `writeFile(path, data)` | Done | Creates or replaces a whole file. Parent folders must exist. The original stays intact if the write fails. Needs cross-origin isolation. Call `refreshTree()` to see the change. |
 | `removeFile(path)` | Done | Removes one file, like `unlink()`. Directories are refused. Needs cross-origin isolation. Call `refreshTree()` to see the change. |
-| `loadTools(specs)` | Done | Downloads and sets up tools (Aioli syntax, see [Tools](#tools)). Can be called again to add tools. Returns all loaded tools. Does not need `init` or cross-origin isolation. |
-| `exec(command, args?, redirects?)` | Done | Runs a loaded program with `callMain` and returns `{ stdout, stderr, exitCode }`. With no `args`, `command` is split on whitespace (no quoting) and `>`, `>>`, `2>`, `2>>` are applied (see [Redirecting Output](#redirecting-output)). The selected folder is mounted at `/shared/data`, the working directory (see [Tools and the Selected Folder](#tools-and-the-selected-folder)). |
-| `close()` | Done | Terminates the worker and rejects pending requests. |
+| `loadTools(specs)` | Done | Downloads and sets up tools, each in its own worker (Aioli syntax, see [Tools](#tools)). Can be called again to add tools. Returns all loaded tools. Does not need `init`, but needs cross-origin isolation. |
+| `exec(command, options?)` | Done | Runs a loaded program, or a pipeline of them (`a \| b \| c`, see [Pipes](#pipes)), or pipelines joined by `&&` (see [Chaining with &&](#chaining-with-)), and returns `{ stdout, stderr, exitCode, stages }`. `command` is split on whitespace (no quoting); `\|`, `&&`, `<`, `>`, `>>`, `2>`, `2>>` are applied (see [Redirecting Output](#redirecting-output)). `options.onStderr(text, stage)` receives stderr as it is printed. The selected folder is mounted at `/shared/data`, the working directory (see [Tools and the Selected Folder](#tools-and-the-selected-folder)). |
+| `exec(program, args, redirects?, options?)` | Done | Runs one program with exact arguments (no splitting) and redirections. |
+| `cancel()` | Done | Stops the running `exec`: its workers are terminated, the pipelines after `&&` do not start, and it resolves with exit code 130 and `cancelled: true`. Does nothing when idle. |
+| `addUrl(url, path?)` | Done | Adds a remote file to the folder as a URL link, without downloading it (checks CORS and range support first). Tools then use `path` (default: the URL's file name) like any file. Does not need a loaded tool. Returns `{ path, size }`. See [Remote Files (URLs)](#remote-files-urls). |
+| `download(url, path)` | Done | Streams a URL into the selected folder (1 MiB at a time, never whole in memory). Returns the number of bytes. |
+| `close()` | Done | Terminates all Mayo workers and rejects pending requests. |
 
 The tree is a `MayoDirectory` whose `children` are `MayoFile` or `MayoDirectory` entries (`mayo.protocol.ts`). The root is always a directory.
 
@@ -44,15 +53,20 @@ The caller selects the directory and handles browser support and permission prom
 | File | Runs in | Role |
 |---|---|---|
 | `mayo.ts` | Main thread | Async client API. Sends requests to the worker and matches replies by id. |
-| `mayo.protocol.ts` | Shared | Tree types and main ↔ worker message types. |
-| `mayo.worker.ts` | Mayo worker | Processes requests one at a time; routes tree operations to `MayoTree` and file operations to `MayoFS`. |
+| `mayo.protocol.ts` | Shared | Tree, tool, pipeline and result types; main ↔ coordinator messages. |
+| `mayo.worker.ts` | Coordinator | Processes requests one at a time (except `cancel`); routes tree operations to `MayoTree`, file operations to its own `MayoFS` client and `exec` to `MayoTools`. |
 | `mayo-folder-store.ts` | Page | Remembers the selected folder in IndexedDB and re-requests permission (see [Remembering the Folder](#remembering-the-folder)). |
-| `mayo-tree.ts` | Mayo worker | `MayoTree`: scans the folder into a tree for display. |
-| `mayo-fs.ts` | Mayo worker | `MayoFS`: synchronous file access; will become the shared Emscripten filesystem. |
-| `mayo-tools.ts` | Mayo worker | `MayoTools`: downloads, sets up and runs Emscripten tools (port of Aioli's worker logic). |
-| `mayo-emscripten-fs.ts` | Mayo worker | `MAYOFS`: Emscripten filesystem on top of `MayoFS`, mounted at `/shared/data`. |
-| `mayo-io.protocol.ts` | Shared | Shared-memory layout and I/O request types. |
-| `mayo-io.worker.ts` | I/O worker | Performs the asynchronous File System Access calls for `MayoFS`. |
+| `mayo-tree.ts` | Coordinator | `MayoTree`: scans the folder into a tree for display. |
+| `mayo-fs.ts` | Coordinator, tool workers | `MayoIO` (coordinator: starts the I/O worker, sets the folder, creates one connection per client) and `MayoFS` (a synchronous client of the I/O worker). |
+| `mayo-tools.ts` | Coordinator | `MayoTools`: tool registry, warm tool workers, running pipelines, cancel. |
+| `mayo-tool.worker.ts` | Tool worker | Hosts one Emscripten instance (port of Aioli's worker logic): set-up, stdio devices and redirections, `callMain`. |
+| `mayo-tool.protocol.ts` | Shared | Coordinator ↔ tool worker messages. |
+| `mayo-pipe.ts` | Tool workers | Ring buffer in a SharedArrayBuffer, the pipe between two stages. |
+| `mayo-emscripten-fs.ts` | Tool workers | `MAYOFS`: Emscripten filesystem on top of `MayoFS`, mounted at `/shared/data`. |
+| `mayo-url-fs.ts` | Coordinator, tool workers | `RemoteChecker` (checks URLs), `RemoteFiles` (a tool's range reads through the I/O worker), the link format and `linkUrl`, `URLFS` (read-only mounts for URLs typed in commands) and `downloadToFolder`. |
+| `mayo-remote-cache.ts` | I/O worker | `RemoteCache`: range requests with `fetch` and a 64 MiB chunk cache shared by every tool. |
+| `mayo-io.protocol.ts` | Shared | Shared-memory layout, I/O requests and control messages. |
+| `mayo-io.worker.ts` | I/O worker | Performs the asynchronous File System Access calls and remote reads for every client. |
 
 ### Remembering the Folder
 
@@ -79,18 +93,23 @@ await forgetFolder();
 
 ```text
 main thread (React UI)
-   │  postMessage (async)
+   │  postMessage
    ▼
-mayo.worker.ts  ── MayoTree, MayoFS, MayoTools (Emscripten tools run here)
-   │  postMessage + Atomics.wait (blocks this worker only)
-   ▼
-mayo-io.worker.ts ── File System Access calls on the selected folder
+mayo.worker.ts ── coordinator: tree, tool registry, pipeline set-up, results (runs no tool)
+   │  creates            │  owns
+   ▼                     ▼
+mayo-tool.worker.ts ×N   mayo-io.worker.ts ── folder access + remote range reads + chunk cache
+ (one Emscripten           ▲   one channel (SharedArrayBuffer + MessagePort) per client:
+  instance each)           │   every tool worker, and the coordinator itself
+   │  stage k stdout ══ ring buffer (SharedArrayBuffer) ══▶ stage k+1 stdin
 ```
 
 - The UI thread never blocks: every `Mayo` method is async.
-- The Mayo worker processes one request at a time, in arrival order, so a rescan and a read cannot race.
-- Tools stay single-threaded (no Emscripten pthreads). The extra worker exists only to make file access synchronous.
-- Errors are sent back as `{ name, message }` and rethrown by `mayo.ts`. If a worker crashes, all pending calls are rejected.
+- The coordinator processes one request at a time, in arrival order, so a rescan and a read cannot race. `cancel` skips the queue so it can reach the running `exec`.
+- The coordinator never calls `callMain`: each loaded program has a warm tool worker, and every stage of a pipeline runs in its own worker at the same time (see [Pipes](#pipes)).
+- Clients block with `Atomics.wait` on their own channel while the I/O worker `await`s the browser, so tools running together do not wait for each other's file calls.
+- Tools stay single-threaded (no Emscripten pthreads); only pipeline stages run in parallel. One `exec` runs at a time.
+- Errors are sent back as `{ name, message }` and rethrown by `mayo.ts`. If the coordinator crashes, all pending calls are rejected; a crashed tool worker fails its stage and is replaced.
 
 ### Tools
 
@@ -124,18 +143,19 @@ Every tool on the biowasm CDN is self-hosted, at its latest version (47 tools, 1
 - Files already present are not downloaded again. `npm run fetch:tools -- bcftools seqtk` updates only those tools.
 - It writes `public/tools/manifest.json` (`tool`, `version`, `programs`, `description`), which the test bench reads to list the tools.
 
-The test bench lists the manifest as checkboxes (one per tool, plus one per program for tools with several), with a filter and a choice between the local copy and the CDN. The Load button loads all ticked programs that are not loaded yet in one call (ticked programs that are already loaded are skipped and listed in the log); loading again adds tools. A "Loaded" list under the button shows every registered program with its tool, version, source (local or CDN), and base/lazy status. The first program loaded (in manifest order) becomes the base tool.
+The test bench lists the manifest as checkboxes (one per tool, plus one per program for tools with several), with a filter and a choice between the local copy and the CDN. The Load button loads all ticked programs that are not loaded yet in one call (ticked programs that are already loaded are skipped and listed in the log); loading again adds tools. A "Loaded" list under the button shows every registered program with its tool, version, source (local or CDN), and lazy status.
 
-How it works (same model as Aioli, all in the Mayo worker, single-threaded):
+How it works (same model as Aioli, but one worker per program):
 
-- The biowasm `<program>.js` glue is a classic script. Module workers cannot use `importScripts`, so `MayoTools` fetches the text and evaluates it with `new Function`. The `.wasm` and `.data` files are located next to it with `locateFile`. Downloads are cached per URL.
+- The biowasm `<program>.js` glue is a classic script. Module workers cannot use `importScripts`, so the coordinator fetches the text once and each tool worker evaluates it with `new Function`. The `.wasm` and `.data` files are located next to it with `locateFile`.
+- The first worker of a program compiles the `.wasm` (`WebAssembly.compileStreaming`) and sends the `WebAssembly.Module` back; later instances of that program get it through `instantiateWasm` and skip the download and compilation.
 - The biowasm CDN sends `Access-Control-Allow-Origin: *`, so it loads under COEP `require-corp`.
-- The first non-`reinit` tool is the **base** (always eager). It owns `/shared` and `/shared/data`; the working directory is `/shared/data`.
-- Other tools mount the base's `/shared` with `PROXYFS`, so files written by one tool are visible to the next (for example `samtools faidx … -o subset.fa` then `seqtk seq subset.fa`).
-- Each tool's sample data (`/<tool>` in its `.data` package) is exposed at `/shared/<tool>`, for example `/shared/samtools/examples/toy.sam`.
+- Each loaded program keeps one **warm** worker between runs (started at load, or on the first `exec` for `lazy` tools). It is replaced after a run if the tool is `reinit`, crashed, was stopped by a broken pipe or was cancelled.
+- Every worker has its own in-memory filesystem: `/shared/data` is the selected folder (the working directory), and `/tmp` and the sample data are private to the worker. Files that tools exchange go in the folder or through a pipe.
+- Each tool's sample data (`/<tool>` in its `.data` package) is exposed at `/shared/<tool>`, for example `/shared/samtools/examples/toy.sam`. Only that tool sees it.
 - Exit codes: `callMain` returns nothing, so `Module.quit` is overridden to record the status. A crash gives exit code 1 and the error is appended to stderr. Modules stay alive between runs (`noExitRuntime`).
-- stdout and stderr are flushed after each run (closed and reopened, as Aioli does), which also saves redirection files. stdin is empty (EOF).
-- stdout and stderr are each capped at 16 MiB per run (`OUTPUT_LIMIT`). The rest is dropped and a `[Mayo] … was cut` line is added to stderr. Without the cap, `samtools view big.bam` (gigabytes of SAM text, all kept in memory and copied to the page) crashed the tab. Large outputs belong in files (`-o` or `>`); note that `/shared` is in memory too.
+- stdin, stdout and stderr are character devices (`/dev/stdin`, `/dev/stdout`) reopened as fd 0/1/2 before each run: a pipe, a redirection file, or the captured output (stdin: end of file). stdout is decoded to text only at the end, so binary output is not mangled.
+- stdout and stderr are each capped at 16 MiB per run (`OUTPUT_LIMIT`). The rest is dropped and a `[Mayo] … was cut` line is added to stderr. Without the cap, `samtools view big.bam` (gigabytes of SAM text, all kept in memory and copied to the page) crashed the tab. Large outputs belong in files (`-o` or `>`) or the next stage of a pipe.
 - A program that is already loaded from the same tool and version is skipped (also when listed twice in one call). The same program name from another tool or version is rejected, since `exec` finds programs by name. If one tool in a `loadTools` call fails, the whole call is rolled back.
 - A wrong URL usually returns the dev server's or GitHub Pages' HTML page; `MayoTools` detects it and reports which URL failed.
 
@@ -149,13 +169,14 @@ await mayo.loadTools(["samtools/1.10"]);        // init and loadTools can come i
 await mayo.exec("samtools idxstats reads.bam");  // reads reads.bam and reads.bam.bai from the folder
 await mayo.exec("samtools index reads.bam");    // writes reads.bam.bai next to reads.bam
 await mayo.exec("samtools view -b -o out/subset.bam reads.bam chr1:1-1000"); // out/ must exist
-await mayo.exec("samtools view -b -o /shared/tmp.bam reads.bam");  // in memory, not in the folder
+await mayo.exec("samtools view -b -o /tmp/tmp.bam reads.bam");     // in this worker's memory, not in the folder
 ```
 
 ```text
-/shared             in-memory (base tool's MEMFS), shared by all tools through PROXYFS
-/shared/data        the selected folder (MAYOFS, read-write)     ← working directory
-/shared/<tool>      each tool's sample data
+/shared             in memory, private to each tool worker
+/shared/data        the selected folder (MAYOFS, read-write)     ← working directory, shared by all tools
+/shared/<tool>      this tool's sample data
+/shared/urls/<n>    URLs typed in commands (URLFS, read-only)
 ```
 
 `MAYOFS` (`mayo-emscripten-fs.ts`) is a custom Emscripten filesystem modelled on Emscripten's `WORKERFS`. Each node operation becomes a synchronous `MayoFS` call through the I/O worker:
@@ -177,13 +198,12 @@ await mayo.exec("samtools view -b -o /shared/tmp.bam reads.bam");  // in memory,
 
 Details:
 
-- Mounted only in the base tool. Other tools reach it through their `PROXYFS` mount of `/shared`.
+- Mounted in every tool worker, each with its own connection to the I/O worker.
 - Remounted before every `exec`. This drops the nodes Emscripten cached during the previous run (so files added, changed or removed outside the tool are seen), and picks up a folder selected after `loadTools`. Without a folder or without cross-origin isolation, `/shared/data` stays an in-memory folder.
 - Read cache: programs read in small blocks, and each I/O request is a round trip to the I/O worker. Each open file keeps one block of up to 1 MiB; a read outside it fetches the next 1 MiB from that position. A 34 MB SAM (`samtools flagstat`) takes about 70 ms in Chrome on an OPFS test folder.
 - Random access works: `samtools view reads.bam chr:start-end` uses the `.bai` index and only reads the needed blocks.
 - An open file is a snapshot: `File` objects become unreadable (`NotReadableError` → `EIO`) if the file changes on disk while a tool reads it.
 - Browser errors become errno codes: `NotFoundError` → `ENOENT`, `TypeMismatchError` → `ENOTDIR`, `NotAllowedError`/`SecurityError` → `EACCES`, invalid paths → `EINVAL`, anything else → `EIO`. So tools print normal messages ("No such file or directory") instead of crashing.
-- This Emscripten version's `FS.ErrnoError` has no `code` field, but `PROXYFS` needs one to pass errors to other tools. `MAYOFS` errors set `code` (for example `"ENOENT"`), so `seqtk comp missing.fa` fails cleanly too.
 - Browser errors also map to `ENOTEMPTY` (`InvalidModificationError`, e.g. `rmdir` on a non-empty folder), `EBUSY` (`NoModificationAllowedError`, file locked by another writer), `ENOSPC` (`QuotaExceededError`) and `EPERM` (`NotSupportedError`).
 
 Writing:
@@ -208,14 +228,62 @@ await mayo.exec("samtools faidx ref.fa 2> faidx.log");        // stderr to a fil
 await mayo.exec("samtools", ["view", "-h", "my file.bam"], { stdout: { path: "out.sam", append: false } });
 ```
 
-- `parseCommand` (in `mayo.ts`) takes out `> file`, `>> file`, `2> file` and `2>> file` (also without the space, `>file`). `1>` is the same as `>`.
-- In the worker, `redirectStdio` closes fd 1 (or 2) and opens the file in its place, so the program writes straight to the file: byte for byte (BAM works), no 16 MiB cap, nothing kept in memory. A redirected stream comes back empty in the result.
+- `parsePipeline` (in `mayo.ts`) takes out `< file`, `> file`, `>> file`, `2> file` and `2>> file` (also without the space, `>file`). `1>` is the same as `>`. In a pipeline, `<` is only allowed on the first stage and `>`/`>>` on the last; `2>` works on any stage.
+- In the tool worker, `redirectStdio` closes fd 0, 1 or 2 and opens the file in its place, so the program writes straight to the file: byte for byte (BAM works), no 16 MiB cap, nothing kept in memory. A redirected stream comes back empty in the result.
 - Paths follow the same rules as program arguments: relative to the selected folder, and the parent folder must exist.
 - Like a shell, the files are opened before the program starts. If one cannot be opened, the program does not run, stderr gets `mayo: <path>: No such file or directory` (or `Is a directory`, `Permission denied`) and the exit code is 1.
 - After the run, Mayo calls `fflush(0)` so the C library writes what it still buffers (a file on stdout is fully buffered, unlike the terminal), then closes the file, which saves it. A failed save adds `[Mayo] could not save …` to stderr and sets the exit code to 1. stdout and stderr then go back to the result for the next run.
 - Newer biowasm builds (for example blast, mash, fasttree) do not export `fflush`. Tools that flush their own output before exiting are unaffected (fasttree output was complete in testing), but a tool that relies on exit-time flushing could lose the last few KB. Prefer the tool's own output option (`-o`) when it has one.
-- Tested in Chrome: `samtools view -h > out.sam` and `minimap2 -a > aln.sam` (a non-base tool through `PROXYFS`) match the captured stdout. `samtools view --no-PG -b > out.bam` is byte-identical to `-o`. `>>`, `2>`, a missing folder and `> .` behave as in a shell.
-- `|`, `||`, `&&`, `&`, `;`, `<` and `2>&1` are rejected with "not supported yet" instead of being passed to the tool as arguments.
+- Tested in Chrome: `samtools view -h > out.sam` and `minimap2 -a > aln.sam` match the captured stdout. `samtools view --no-PG -b > out.bam` is byte-identical to `-o`. `>>`, `2>`, `<`, a missing folder and `> .` behave as in a shell.
+- `||`, `&`, `;` and `2>&1` are rejected with "not supported" instead of being passed to the tool as arguments. `|` and `&&` must have spaces around them (`a|b` and `a&&b` are rejected).
+
+### Remote Files (URLs)
+
+Tools can read remote files in place: only the bytes a tool asks for are fetched, with HTTP range requests, and nothing is loaded whole into memory. This works for any tool, because it happens at the filesystem level, not inside the tool.
+
+A URL is added to the folder as a **link file**, and then used like any other file:
+
+```ts
+await mayo.addUrl("https://example.org/data/reads.bam");                  // creates reads.bam; nothing downloaded
+await mayo.addUrl("https://example.org/ref/grch38.fa", "ref/hg38.fa");     // any name or subfolder
+await mayo.exec("samtools view -c reads.bam chr1:1-200000");             // fetches the remote .bai and one region
+await mayo.exec("samtools faidx ref/hg38.fa chr2:1-500");                 // uses the remote .fai
+await mayo.exec("samtools faidx https://example.org/ref/grch38.fa chr2:1-500"); // a URL typed in a command also works
+await mayo.download("https://example.org/ref/small.fa", "ref.fa");         // or save a full copy into the folder
+```
+
+Link files:
+
+- A link is a small text file in the selected folder, named after the URL (or the given path), with a single line: `mayo-url https://example.org/data/reads.bam`. It lives in the real folder, so it is kept for the next visit and can be renamed, moved or deleted in Finder like any file. The tree marks it with its URL (`MayoFile.url`).
+- `addUrl` checks the URL before writing the link: a `HEAD` gives the size, then a `Range: bytes=0-0` probe must return `206`. The probe is an async `fetch` that is aborted, so a server ignoring `Range` does not send the whole file. It fails with a clear message if the server refuses (not found, CORS blocked, no range support), if the parent folder does not exist, or if an ordinary file already has that name (an existing link is replaced).
+- `MAYOFS` recognises links when a tool looks a file up: files of at most 4 KiB starting with `mayo-url ` are read once (and again only if their size or date changes). The tool sees the remote file's size and date, and its reads go to the remote file.
+- Index files: if a name is missing from the folder but extends a link (`reads.bam.bai`, `ref.fa.fai`, `calls.vcf.gz.tbi` next to the links `reads.bam`, `ref.fa`, `calls.vcf.gz`), Mayo asks the server for the link's URL plus that suffix. A local index file, if there is one, takes precedence. Without a remote index, `samtools index reads.bam` reads the remote BAM once and writes `reads.bam.bai` into the folder.
+- Writing to a link replaces it with an ordinary file, as overwriting any file would (`samtools sort -o reads.bam …`). `removeFile` and `rm` remove the link, not the remote file.
+- If the URL stops working, opening the link fails and stderr gets `[Mayo] reads.bam links to <url>, which cannot be read …`.
+- `readFile` on a link returns the link text, not the remote contents.
+
+URLs typed in commands:
+
+- `exec` also accepts `http(s)://` arguments directly. They are checked the same way before the program starts. On failure the program does not run; stderr gets `mayo: <url>: …` and the exit code is 1. Each URL directory gets one read-only `URLFS` mount, `/shared/urls/<n>/` (files next to it are found by name), and the argument is replaced by that path. These mounts last as long as the tool worker; writing next to them fails with `EROFS`. In a pipeline, if a stage's URL fails the check, that stage does not run (its neighbours see end of file or a broken pipe) and the exit code is 1.
+
+Reading:
+
+- Remote reads go through the I/O worker (`mayo-remote-cache.ts`): async `fetch` range requests and an LRU cache of 1 MiB chunks, capped at 64 MiB and shared by every tool worker. A tool blocks on its own channel, as for folder reads. Sequential reads ramp read-ahead up to 8 chunks; random reads fetch one chunk. Repeated runs, and other stages, reuse cached chunks.
+- URLs are checked (`HEAD` and a range probe) by the coordinator before any stage starts, with `RemoteChecker`.
+- The exec result has `remote: { requests, bytes }` when a remote file was read, and each stage has its own; the test bench shows it as "fetched X in N range requests".
+
+Server requirements and limitations:
+
+- The server must allow CORS (`Access-Control-Allow-Origin`) and support range requests. Single-range `Range` and `HEAD` requests do not need a preflight. Check each data host: many public buckets allow it, but not all.
+- A `text/html` response is treated as "not found" (SPA hosts and the dev server return `index.html` for missing files).
+- Signed URLs keep their query string, but index files are guessed by adding the suffix to the URL's path, which breaks the signature. Add the index as its own link instead (`addUrl(<signed .bai url>, "reads.bam.bai")`), or for typed URLs use htslib's `##idx##` syntax. Presigned URLs that refuse `HEAD` are not supported yet.
+- `download` works without range support and saves a full copy, for files read many times.
+- Tested in Chrome:
+  - Links: a BAM region query fetched 1.5 MiB of 12.4 MiB in 3 requests and repeated runs fetched nothing. `faidx` on a link to the 3 GB GRCh37 FASTA in a subfolder fetched 2 MiB in 3 requests.
+  - Writing to the folder works (`view -b -o`, `>`). Overwriting a link and `samtools index` on a link without a remote index both work.
+  - Clear errors for no CORS, an existing file, a missing folder, and a dead URL.
+  - Typed URLs: `faidx` on the GRCh37 FASTA fetched 3.1 MB in 4 requests. Streaming 242 MiB of chr1 raised page memory by about 40 MiB. `seqtk` reads URLs too.
+  - Pipes: `samtools view -b <url> chr1:1000-2000 | samtools view -c -` (2 requests) and a link read by the first stage of a pipe.
 
 ### Synchronous File Bridge
 
@@ -240,9 +308,10 @@ Details:
 - In a real folder, Chrome's temporary file is visible as `<name>.crswap` while a write is in progress. If the I/O worker is killed mid-write (timeout, `close()`, tab closed), that file may be left behind.
 - `removeFile` behaves like `unlink()`: it checks the entry is a file before calling `removeEntry`, because `removeEntry` would also delete an empty directory. Removing a missing file or a directory fails.
 - The state is set to `PENDING` before posting, so the reply's notify cannot be missed.
-- `init` starts a fresh I/O worker and waits asynchronously for its `ready` message. This handshake is required: a worker created from another worker only starts once its parent returns to the event loop, so blocking right after `new Worker()` would hang until the timeout.
+- The coordinator starts the I/O worker once and waits asynchronously for its `ready` message. This handshake is required: a worker created from another worker only starts once its parent returns to the event loop, so blocking right after `new Worker()` would hang until the timeout. For the same reason, tool workers and their channels are all set up (and `ready`) before any stage blocks.
+- Several clients: the coordinator and each tool worker have their own `MessageChannel` and SharedArrayBuffer (`MayoIO.connect`). A client has at most one request in flight, so replies cannot mix. Open handles are tracked per client; `disconnect` (a worker was cancelled or replaced) aborts its writers, so the target files are left unchanged. `init` sends the new folder to the I/O worker (`root`), which drops every open handle.
 - Paths are relative to the selected folder. `.` or `..` segments are rejected, so a path cannot escape the folder (Emscripten resolves them before calling `MAYOFS`). Empty paths are only allowed for `stat` and `list`.
-- Each request times out after 30 seconds. The I/O worker is then terminated, and Mayo must be initialized again.
+- Each request times out after 120 seconds (a remote read may fetch several MiB). The client's connection is then dropped; the coordinator reconnects on its next file operation.
 
 ### Cross-Origin Isolation (COOP/COEP)
 
@@ -258,7 +327,7 @@ Cross-Origin-Embedder-Policy: require-corp
 | `npm run dev` / `vite preview` | `server.headers` and `preview.headers` in `vite.config.ts` |
 | GitHub Pages | `public/coi-serviceworker.js` (see below) |
 
-Without isolation, `init` and the tree methods still work, but file calls fail with an explicit "requires cross-origin isolation" error. The Mayo test bench shows the current status.
+Without isolation, `init` and the tree methods still work, but file calls, `loadTools` and `exec` fail with an explicit "needs cross-origin isolation" error. The Mayo test bench shows the current status.
 
 Consequences:
 
@@ -297,7 +366,7 @@ If we move to a host that can send headers (Cloudflare Pages, Netlify, Vercel), 
 
 ### Testing
 
-- `src/components/MayoTester.tsx` (on the Analyser page) is a manual test bench. Until a folder is chosen (or a remembered one reconnected) it only shows the folder picker; choosing a folder also runs `init`. Then it shows separate panels: Folder (init, getTree, refreshTree, forget), Files (path and content fields for readFile/writeFile/removeFile), Tools (filterable tool list, `loadTools` and the list of loaded programs), Run (command field for `exec`, Enter runs it, and a button that closes the worker), a status bar and the output log. An isolation status line sits at the top. Once visited, the Analyser page stays mounted (hidden on other pages), so a running `exec`, loaded tools and the log survive page changes; closing or reloading the tab during an `exec` asks for confirmation (`useLeaveGuard`).
+- `src/components/MayoTester.tsx` (on the Analyser page) is a manual test bench. Until a folder is chosen (or a remembered one reconnected) it only shows the folder picker; choosing a folder also runs `init`. Then it shows separate panels: Folder (init, getTree, refreshTree, forget), Files (path and content fields for readFile/writeFile/removeFile), Remote files (URL and optional name; add it to the folder as a link, or download it), Tools (filterable tool list, `loadTools` and the list of loaded programs), Run (command field for `exec`, Enter runs it, a Stop button that calls `cancel()`, and a button that closes the workers; stderr is shown live under the status bar while a command runs, and pipelines list each stage's exit code), a status bar and the output log. An isolation status line sits at the top. Once visited, the Analyser page stays mounted (hidden on other pages), so a running `exec`, loaded tools and the log survive page changes; closing or reloading the tab during an `exec` asks for confirmation (`useLeaveGuard`).
 - Test in Chrome or Edge. VS Code's embedded browser reports `crossOriginIsolated = false` even with the correct headers.
 - The folder picker cannot be automated. For scripted tests, use an OPFS directory (`navigator.storage.getDirectory()`) in place of the picked folder, for example by stubbing `window.showDirectoryPicker`.
 - To test the GitHub Pages setup, build with the deploy base and serve it from a static server that sends no headers:
@@ -310,9 +379,82 @@ If we move to a host that can send headers (Cloudflare Pages, Netlify, Vercel), 
 
   The first load reloads once, then the test bench should show "Cross-origin isolated: yes".
 
+### Pipes
+
+Real Unix-style pipes: every stage runs at the same time, in its own worker, and data streams between them with backpressure, instead of stage 1 writing a temporary file before stage 2 starts.
+
+```ts
+await mayo.exec("minimap2 -a ref.fa reads.fq 2> map.log | samtools sort -o aln.bam -");
+await mayo.exec("samtools view -h reads.bam chr1 | samtools view -b - | samtools view -c -");
+await mayo.exec("samtools view big.bam | head -n 5");                 // head exits early; fine
+const { exitCode, stages } = await mayo.exec("seqtk seq -a < reads.fq | samtools faidx - > out.txt");
+```
+
+Decisions:
+
+- **One worker per tool instance.** `callMain` blocks its thread until the program exits, so stages can only overlap if each runs in its own worker. Each tool stays single-threaded (no pthreads). One `exec` runs at a time; there is no limit on the number of stages.
+- **Only the selected folder is shared.** Every tool worker mounts the folder (MAYOFS) through its own channel to the I/O worker. `/tmp` and sample data stay private to each worker.
+- **Remote reads live in the I/O worker**, with one cache for all tools (see [Remote Files](#remote-files-urls)).
+- **Exit code: `pipefail`.** The result's `exitCode` is the first non-zero exit code among the stages, except stages stopped by a broken pipe. `0` if all succeeded.
+- **stderr is streamed live** when `exec` gets `onStderr`; tool workers send it at most every 100 ms.
+
+The ring buffer (`mayo-pipe.ts`):
+
+- A SharedArrayBuffer: an Int32 header (bytes written, bytes read, writer closed, reader closed, a change counter), then 1 MiB of data. Counters wrap at 2³², so the capacity is a power of two.
+- **Writer** (stage k's fd 1): copies what fits; when the buffer is full it waits with `Atomics.wait` (backpressure, so a fast producer cannot fill memory). If the reader has closed it throws `PipeClosedError`.
+- **Reader** (stage k+1's fd 0): returns what is available; when the buffer is empty it waits; empty and writer closed means end of file.
+- Every change bumps the change counter and notifies it, and waiters wait on that counter, so a wake-up cannot be missed. There is no timeout: a stage may wait minutes (`sort` reads everything first). Deadlocks are avoided because ends are always closed: by the stage when `main` returns, or by the coordinator (`closePipe`) when a stage crashes, is cancelled or does not start.
+- Emscripten side: `/dev/stdin` and `/dev/stdout` are character devices (`FS.registerDevice`) whose `read`/`write` go to the pipe, so binary data passes byte for byte. `-` and `/dev/stdin` reach the same device. They have no `llseek`, so seeking fails with `ESPIPE`, as on a real pipe.
+- Broken pipe: writing after the reader exited throws out of the device's `write`, which ends `main` (like SIGPIPE). The stage gets exit code 141 and `brokenPipe: true`, its stderr after that point is dropped, and its worker is replaced.
+- After `main` returns, the stage calls `fflush(0)` (musl fully buffers stdout when it is not a terminal), then closes its pipe ends.
+
+Running a pipeline (`MayoTools.exec`):
+
+1. `parseCommand` splits on ` && ` (see [Chaining with &&](#chaining-with-)), then `parsePipeline` splits each side on ` | ` and checks the operators (`<` first stage only, `>`/`>>` last stage only).
+2. Every URL in the arguments is checked. A stage with a bad URL does not run: its stderr has the reason and its exit code is 1.
+3. Each stage gets its program's warm worker; a program that appears again (`samtools … | samtools …`) gets an extra instance, which reuses the compiled module and is terminated after the run.
+4. One pipe per `|`; `run` is sent to every stage at once, and the coordinator waits for all of them.
+5. The result: `stdout` is the last stage's (16 MiB cap) unless redirected; `stderr` is every stage's, in order; `exitCode` follows `pipefail`; `stages` has `{ program, exitCode, stderr, remote?, brokenPipe? }` per stage; `remote` sums the stages.
+
+Cancelling (`mayo.cancel()`, or the tester's Stop button) terminates the stage workers, closes the pipes and disconnects their I/O channels, which aborts their writes: files being written keep their previous contents (a file created by the run may be left empty). The `exec` resolves with exit code 130 and `cancelled: true`; fresh warm workers are started in the background. `close()` still stops everything.
+
+Consequences and limits:
+
+- **Memory:** each instance has its own WebAssembly memory, so a 3-stage pipeline uses about three times as much. The remote cache is shared.
+- **Files:** two stages writing the same file: the last close wins. A stage reading a file another stage is writing sees the old contents, because writes appear on close. Temporary files (`samtools sort -T`) should go in the folder or the stage's own `/tmp`.
+- **Not every tool streams:** tools that seek on their input fail with `ESPIPE` on a pipe. Tools such as `sort` read everything first, so they only overlap with the stage before them.
+- **Headers:** as in a shell, `samtools view in.sam | samtools view -` fails without `-h`, because the second stage sees no header.
+
+Tested in Chrome (400 000-read SAM on an OPFS folder):
+
+- `samtools view -b big.sam | samtools view -c -` counts 400 000, as without a pipe.
+- `samtools view -h big.sam | samtools sort -o piped.bam -` gives the same records as the two-step version (0.44 s vs 0.60 s).
+- `minimap2 -a … 2> mm.log | samtools sort -o mm.bam -` works, with the log in the folder.
+- `samtools view big.sam | head -n 3` ends in 34 ms: `samtools` gets a broken pipe (141, ignored), exit code 0, no error printed.
+- Three stages, a `lazy` tool (`wc`) started on first use, `<`, `>>` and `2>` on a middle stage, a failing middle stage (exit code 1), and live stderr tagged by stage.
+- Cancel during a sort: exit code 130 at once, an existing output file is unchanged, no `.crswap` is left, and the next pipeline runs normally.
+- Node: `node --test mayo-pipe.test.mjs mayo.test.mjs` (ring buffer with `worker_threads`: 64 MiB through a 64 KiB buffer checked by hash, wrap-around, EPIPE, end of file; and `parseCommand`/`parsePipeline`).
+
+### Chaining with &&
+
+`a && b` runs `b` only if `a` exited with 0, as in a shell. Each side can be a pipeline:
+
+```ts
+await mayo.exec("minimap2 -a ref.fa reads.fq | samtools sort -o aln.bam - && samtools index aln.bam");
+```
+
+- `parseCommand` (in `mayo.ts`) splits on ` && ` and parses each side with `parsePipeline`, so each side has its own redirections. An empty side (`a &&`, `&& b`) is rejected, and so is `&&` without spaces (`a&&b`).
+- The coordinator (`MayoTools.exec`) runs the pipelines one after the other. Every program is checked before anything runs, so a typo in the last pipeline fails before the first one starts. Each pipeline sees the files the previous one wrote, because outputs are saved when a program closes them.
+- Result: `stdout` and `stderr` are each pipeline's in turn; `exitCode` is the last pipeline that ran (the first failure, since the chain stops there; `pipefail` applies within each pipeline); `stages` lists every stage that ran, with `pipeline` (0, 1, …) telling which side it belongs to; `remote` sums them all. Stages that did not run are not listed.
+- Live stderr numbers stages across the whole command: in `a | b && c`, `c` is stage 2.
+- `cancel()` stops the running pipeline and the rest of the chain does not start. A cancel sent while workers are still starting is also honoured (exit code 130).
+- Tested in Chrome: `minimap2 -a … | samtools sort -o sorted.bam - && samtools index sorted.bam && samtools idxstats sorted.bam` (writes `sorted.bam` and `sorted.bam.bai`, stdout is the idxstats output); a failing first or middle command stops the chain with its exit code; cancel during the first pipeline and right after `exec` both give 130 with no later stage run; live stderr from the third stage is tagged 2.
+
 ### Not Yet Implemented
 
-- stdin for `exec`, pipes (`|`), `&&`, `2>&1`, quoting in command strings, and Aioli's `mount`/`cat`/`ls`/`download` helpers.
+- `||`, `;`, `2>&1`, quoting in command strings, and Aioli's `cat`/`ls` helpers.
+- Running several `exec` at once, or a limit on the number of stages based on memory.
+- Multi-threaded tools (Emscripten pthreads) inside pipes.
 
 ## Runtime Model
 

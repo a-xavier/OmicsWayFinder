@@ -57,4 +57,67 @@ visible.
 	clear uncertainty, manageable cognitive load and efficient workflows for
 	different levels of experience.
 
+## Development TODO
+
+Work in progress on the browser execution engine (Mayo, the Emscripten backend). Read
+[src/lib/execution_backend/emscripten/README.md](src/lib/execution_backend/emscripten/README.md)
+first: it documents the current design, the API, the test setup and the planned work in detail.
+
+**Current state:** tools (samtools, bcftools, seqtk, minimap2, …) run single-threaded, one worker
+per tool instance, reading and writing the user's selected folder directly through a shared
+synchronous I/O worker. Commands can be streaming pipelines (`minimap2 … | samtools sort … -`),
+with every stage running at the same time, live stderr, `pipefail` exit codes and `Mayo.cancel()`.
+Redirection (`<`, `>`, `>>`, `2>`) works. Remote files work as *URL link files* in the folder
+(one line, `mayo-url <url>`), read lazily with HTTP range requests through a cache in the I/O
+worker. Test everything with the Mayo tester page in real Chrome.
+
+1. **Commit the URL link and pipes work.** Not committed yet; all of it is tested in Chrome and
+	with `node --test` (see the "Pipes" and "Remote Files" sections of the emscripten README):
+	- URL links: `mayo-url-fs.ts`, MAYOFS link support, `Mayo.addUrl`, the tester's "Remote files"
+		panel.
+	- Pipes: `mayo-pipe.ts`, `mayo-tool.worker.ts`, the multi-client I/O worker,
+		`mayo-remote-cache.ts`, `parsePipeline`, `cancel()`, live stderr, and the tester's Stop button.
+	- `&&` chains: `parseCommand`, the chain runner in `MayoTools.exec`, `pipeline` on stage results.
+	- The old `mayo-worker.test.mjs` is deleted; `mayo.test.mjs` now tests `parseCommand`/`parsePipeline`.
+
+2. (Done) Fix or replace the stale Node test.
+
+3. (Done) Streaming pipes with one worker per tool. Settled: `pipefail` (ignoring broken-pipe
+	stages), live stderr, no limit on the number of stages. `&&` is done too. Possible follow-ups:
+	`||`, `;`, `2>&1`,
+	quoting, and a memory-based warning for long pipelines.
+
+4. **Multi-threaded tools (Emscripten pthreads) inside pipes**, e.g.
+	`minimap2 -t 6 -ax sr ref.fa r1.fq r2.fq | samtools sort -@ 2 -o aln.bam -`. Not yet in the
+	emscripten README. Add it there as a subsection of the "Pipes" section, then build it:
+	- Each tool worker is the pthread "main thread". Its pthreads are nested workers that share only
+		that tool's Wasm memory. Tools still connect only through the pipe.
+	- Pthread file calls are forwarded to the tool worker's main thread, so MAYOFS, URL links and
+		pipe devices work unchanged.
+	- Nested workers cannot start while the tool worker is blocked in `callMain`. Build with
+		`-sPTHREAD_POOL_SIZE=<JS expression, e.g. Module.mayoThreads>` and
+		`-sPTHREAD_POOL_SIZE_STRICT=2`, and size the pool *before* `main` starts.
+	- Tool manifests declare their thread flag: minimap2 `-t N` needs N threads; samtools `-@ N`
+		means N *extra* threads, so N+1. The coordinator reads the flag to size each pool.
+	- The coordinator checks the total threads against the detected core count (already detected in
+		the app) and warns or caps.
+	- Mayo's own `Atomics.wait` calls (I/O and pipe) must only wait on *other* workers, never on
+		the tool's own pthreads, or they can deadlock.
+	- Build flags: `-pthread`, `-msimd128` (minimap2), `-sEXIT_RUNTIME=1`, and a maximum memory
+		setting (wasm32 caps out at 4 GB per tool, too small for a whole human minimap2 index). Point
+		`samtools sort -T` at the folder so temporary files spill to disk.
+	- `cancel()` must also terminate the tool's pthread workers.
+	- This replaces the "tools stay single-threaded" rule in the emscripten README; update it.
+
+5. **Java tools (future, parked).** GATK, snpEff, SnpSift and Beagle via CheerpJ, streaming the
+	selected folder through a Java NIO bridge. The design and a proposed spike are in
+	[src/lib/execution_backend/java/README.md](src/lib/execution_backend/java/README.md).
+
+6. **Chips, the workflow engine on top of Mayo.** Tracks inputs, outputs, tools and commands,
+	hashes them to detect changes, schedules tasks to fit the device, and resumes runs. Design,
+	open questions and order of work are in [src/lib/chips/README.md](src/lib/chips/README.md).
+	Settle the open questions (especially the syntax) with the maintainer before starting. Tool
+	workers and pipes (step 3) are in place; running independent tasks in parallel still needs
+	Mayo to accept several `exec` calls at once.
+
 ** RESEARCH USE ONLY **

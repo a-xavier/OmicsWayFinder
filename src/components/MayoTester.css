@@ -397,3 +397,14 @@
     animation-duration: 2.4s;
   }
 }
+
+.mayo-tester__live {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--code-bg, var(--social-bg));
+  font-size: 12px;
+  white-space: pre-wrap;
+}

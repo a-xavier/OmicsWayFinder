@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAYO_CDN, Mayo, type MayoDirectory, type MayoEntry, type MayoToolInfo, type MayoToolSpec } from '../lib/execution_backend/emscripten/mayo'
+import { MAYO_CDN, Mayo, urlFileName, type MayoDirectory, type MayoEntry, type MayoExecResult, type MayoToolInfo, type MayoToolSpec } from '../lib/execution_backend/emscripten/mayo'
 import { folderPermission, forgetFolder, loadFolder, requestFolderPermission, saveFolder } from '../lib/execution_backend/emscripten/mayo-folder-store'
 import { useLeaveGuard } from '../lib/useLeaveGuard'
 import './MayoTester.css'
@@ -25,6 +25,8 @@ export default function MayoTester() {
   const [remembered, setRemembered] = useState(false)
   const [path, setPath] = useState('mayo-test.txt')
   const [content, setContent] = useState('Hello from Mayo')
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [saveAs, setSaveAs] = useState('')
   const [manifest, setManifest] = useState<ManifestTool[]>([])
   const [manifestError, setManifestError] = useState('')
   const [toolFilter, setToolFilter] = useState('')
@@ -37,6 +39,8 @@ export default function MayoTester() {
   const [command, setCommand] = useState('samtools view /shared/samtools/examples/toy.sam')
   const [running, setRunning] = useState<{ action: string; start: number; exec: boolean } | null>(null)
   const [now, setNow] = useState(() => performance.now())
+  // stderr printed so far by the running command, shown live.
+  const [liveStderr, setLiveStderr] = useState('')
   const busy = running !== null
   // Closing or reloading the tab terminates the Mayo worker and kills the program mid-run.
   useLeaveGuard(running?.exec ?? false)
@@ -339,11 +343,68 @@ export default function MayoTester() {
             </div>
           </section>
 
+          <section className="mayo-tester__panel" aria-labelledby="mayo-remote-title">
+            <h3 id="mayo-remote-title">Remote files (URLs)</h3>
+            <p className="mayo-tester__hint">
+              <strong>Add to folder</strong> puts a small link file in the folder (named after the URL) without
+              downloading anything. Tools use it like any file and fetch only the bytes they read, with range requests;
+              index files next to the URL (<code>.bai</code>, <code>.fai</code>, <code>.tbi</code>) are found too. The
+              server must allow CORS and range requests. <strong>Download</strong> saves a full copy instead.
+            </p>
+            <form
+              className="mayo-tester__command"
+              onSubmit={event => {
+                event.preventDefault()
+                const url = remoteUrl.trim()
+                if (busy || !url) return
+                void run(`addUrl ${url}`, async () => {
+                  const added = await getMayo().addUrl(url, saveAs.trim() || undefined)
+                  const tree = formatTree(await getMayo().refreshTree())
+                  return `Added ${added.path} (${formatBytes(added.size)} on the server). Nothing was downloaded.\n\n${tree}`
+                })
+              }}
+            >
+              <label>
+                URL
+                <input
+                  value={remoteUrl}
+                  placeholder="https://…/reads.bam"
+                  spellCheck={false}
+                  onChange={event => setRemoteUrl(event.target.value)}
+                />
+              </label>
+              <button type="submit" className="mayo-tester__primary" disabled={busy || !remoteUrl.trim()}>
+                add to folder
+              </button>
+            </form>
+            <form
+              className="mayo-tester__command"
+              onSubmit={event => {
+                event.preventDefault()
+                const url = remoteUrl.trim()
+                const target = saveAs.trim() || urlFileName(new URL(url, document.baseURI).href)
+                if (busy || !url || !target) return
+                void run(`download ${url} → ${target}`, async () => {
+                  const bytes = await getMayo().download(url, target)
+                  return `Saved ${formatBytes(bytes)} to ${target}.`
+                }, true)
+              }}
+            >
+              <label>
+                Name in the folder (optional; defaults to the URL's file name)
+                <input value={saveAs} placeholder="reads.bam" spellCheck={false} onChange={event => setSaveAs(event.target.value)} />
+              </label>
+              <button type="submit" disabled={busy || !remoteUrl.trim()}>
+                download
+              </button>
+            </form>
+          </section>
+
           <section className="mayo-tester__panel" aria-labelledby="mayo-tools-title">
             <h3 id="mayo-tools-title">Tools</h3>
             <p className="mayo-tester__hint">
-              Tick the programs you need and load them; load more at any time. The first program loaded owns the
-              shared <code>/shared</code> folder. Local copies live in <code>public/tools</code>
+              Tick the programs you need and load them; load more at any time. Each program gets its own worker,
+              with the selected folder as its working directory. Local copies live in <code>public/tools</code>
               (<code>npm run fetch:tools</code> updates them).
             </p>
             <div className="mayo-tester__fields">
@@ -422,7 +483,6 @@ export default function MayoTester() {
                       <strong>{tool.program}</strong>
                       <span>{tool.tool} {tool.version}</span>
                       <span>{tool.urlPrefix.startsWith(MAYO_CDN) ? 'CDN' : 'local'}</span>
-                      {tool.base && <em>base</em>}
                       {!tool.loaded && <span>lazy</span>}
                     </li>
                   ))}
@@ -434,20 +494,24 @@ export default function MayoTester() {
           <section className="mayo-tester__panel" aria-labelledby="mayo-run-title">
             <h3 id="mayo-run-title">Run</h3>
             <p className="mayo-tester__hint">
-              One loaded program per command. <code>&gt;</code>, <code>&gt;&gt;</code> and <code>2&gt;</code> write
-              to files in the folder; pipes and <code>&amp;&amp;</code> are not supported yet.
+              Loaded programs, joined with <code> | </code> (spaces around it); each runs in its own worker, at the
+              same time, streaming to the next. <code> &amp;&amp; </code> runs the next pipeline only if the previous one
+              succeeded. <code>&lt;</code>, <code>&gt;</code>, <code>&gt;&gt;</code> and <code>2&gt;</code> use files
+              in the folder; quotes are not supported. URL
+              links added to the folder, and <code>https://</code> URLs typed here, are read in place with range
+              requests.
             </p>
             <form
               className="mayo-tester__command"
               onSubmit={event => {
                 event.preventDefault()
                 if (busy) return
+                setLiveStderr('')
                 void run(`exec ${command}`, async () => {
-                  const result = await getMayo().exec(command)
-                  return {
-                    ok: result.exitCode === 0,
-                    output: `exit code ${result.exitCode}\n--- stdout ---\n${result.stdout.slice(0, 4000)}--- stderr ---\n${result.stderr.slice(0, 4000)}`,
-                  }
+                  const result = await getMayo().exec(command, {
+                    onStderr: text => setLiveStderr(previous => (previous + text).slice(-4000)),
+                  })
+                  return { ok: result.exitCode === 0, output: formatExec(result) }
                 }, true)
               }}
             >
@@ -460,11 +524,19 @@ export default function MayoTester() {
               </button>
               <button
                 type="button"
+                onClick={() => void mayoRef.current?.cancel()}
+                disabled={!running?.exec}
+                title="Stops the running command's programs; files they were writing are left unchanged"
+              >
+                Stop
+              </button>
+              <button
+                type="button"
                 className="mayo-tester__quiet"
                 onClick={closeMayo}
-                title="Terminates the worker; also stops a running command"
+                title="Terminates all Mayo workers; the next action starts afresh"
               >
-                {busy ? 'Stop (close worker)' : 'close worker'}
+                close worker
               </button>
             </form>
           </section>
@@ -482,6 +554,9 @@ export default function MayoTester() {
               <span title={log[0]?.action}>Idle{log[0] ? ` — last: ${log[0].action} (${log[0].ok ? 'ok' : 'failed'}${log[0].seconds === undefined ? '' : `, ${formatSeconds(log[0].seconds)}`})` : ''}</span>
             )}
           </div>
+          {running?.exec && liveStderr && (
+            <pre className="mayo-tester__live" aria-label="stderr so far">{liveStderr}</pre>
+          )}
         </>
       )}
 
@@ -511,9 +586,23 @@ function formatSeconds(seconds: number): string {
   return `${Math.floor(seconds / 60)} min ${(seconds % 60).toFixed(0).padStart(2, '0')} s`
 }
 
+function formatExec(result: MayoExecResult): string {
+  const fetched = (remote: { requests: number; bytes: number } | undefined) =>
+    remote ? `, fetched ${formatBytes(remote.bytes)} in ${remote.requests} range request${remote.requests === 1 ? '' : 's'}` : ''
+  const lines = [`exit code ${result.exitCode}${result.cancelled ? ' (cancelled)' : ''}${fetched(result.remote)}`]
+  if (result.stages.length > 1) {
+    const chained = result.stages.some(stage => stage.pipeline > 0)
+    result.stages.forEach((stage, index) => {
+      if (chained && stage.pipeline !== result.stages[index - 1]?.pipeline) lines.push(` pipeline ${stage.pipeline + 1}:`)
+      lines.push(`  ${index + 1}. ${stage.program}: exit code ${stage.exitCode}${stage.brokenPipe ? ' (broken pipe, ignored)' : ''}${fetched(stage.remote)}`)
+    })
+  }
+  return `${lines.join('\n')}\n--- stdout ---\n${result.stdout.slice(0, 4000)}--- stderr ---\n${result.stderr.slice(0, 4000)}`
+}
+
 function formatTools(tools: MayoToolInfo[]): string {
   return tools
-    .map(tool => `${tool.tool}/${tool.program}/${tool.version}${tool.base ? ' (base)' : ''} ${tool.loaded ? 'loaded' : 'lazy, not loaded'}\n  ${tool.urlPrefix}`)
+    .map(tool => `${tool.tool}/${tool.program}/${tool.version} ${tool.loaded ? 'loaded' : 'lazy, not loaded'}\n  ${tool.urlPrefix}`)
     .join('\n')
 }
 
@@ -523,10 +612,18 @@ function formatTree(tree: MayoDirectory): string {
   const walk = (entries: readonly MayoEntry[], prefix: string) => {
     entries.forEach((entry, index) => {
       const last = index === entries.length - 1
-      lines.push(`${prefix}${last ? '└── ' : '├── '}${entry.name}${entry.kind === 'directory' ? '/' : ''}`)
+      const suffix = entry.kind === 'directory' ? '/' : entry.url ? `  → ${entry.url}` : ''
+      lines.push(`${prefix}${last ? '└── ' : '├── '}${entry.name}${suffix}`)
       if (entry.kind === 'directory') walk(entry.children, prefix + (last ? '    ' : '│   '))
     })
   }
   walk(tree.children, '')
   return lines.join('\n')
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`
 }

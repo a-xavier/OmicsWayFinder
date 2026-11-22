@@ -1,20 +1,27 @@
 /**
  * MAYOFS: an Emscripten filesystem backed by the user-selected folder through MayoFS.
  *
- * Mounted in the base tool at /shared/data (the working directory); other tools reach it
- * through PROXYFS. Supports lookup, stat, readdir, open, read, write, seek, truncate,
- * create, unlink, mkdir, rmdir and rename.
+ * Mounted in every tool worker at /shared/data (the working directory), each with its own MayoFS
+ * connection. Supports lookup, stat, readdir, open, read, write, seek, truncate, create, unlink,
+ * mkdir, rmdir and rename.
  *
  * Writes go to a temporary copy that replaces the file when it is closed (File System Access
  * has no in-place writes for user folders). So a file's new contents are visible only after
  * close, and reading a file through a stream that also writes it returns the old contents.
+ *
+ * URL links: a small file whose content is "mayo-url <url>" (made by Mayo.addUrl) is served as
+ * the remote file it names, read lazily with range requests (RemoteFiles). Tools see its real size
+ * and contents. A missing name that extends a link (reads.bam.bai next to the link reads.bam) is
+ * looked up next to the URL, so remote index files are found. Opening a link for writing replaces
+ * it with an ordinary file, as overwriting any file would.
  *
  * Modelled on Emscripten's WORKERFS. Each Emscripten module has its own FS object,
  * so the filesystem is created for one module's FS.
  */
 
 import type { MayoFS } from "./mayo-fs";
-import { DATA_CAPACITY, type MayoIOKind } from "./mayo-io.protocol";
+import { DATA_CAPACITY, type MayoIOKind, type MayoIOStat } from "./mayo-io.protocol";
+import { isReadError, LINK_MAX_SIZE, parseLink, type RemoteFile, type RemoteFiles, type RemoteReadState } from "./mayo-url-fs";
 
 // Emscripten's errno numbers (the same in every module built with a recent Emscripten).
 const ERRNO = {
@@ -61,6 +68,9 @@ type FSNode = {
   stream_ops: unknown;
   size: number;
   timestamp: number;
+  /** Set for a URL link, or for a remote file found next to one (`virtual`: not in the folder). */
+  remote?: RemoteFile;
+  virtual?: boolean;
 };
 
 /** Browser handles and buffers for one open file. Duplicated streams share it. */
@@ -76,7 +86,7 @@ type OpenFile = {
   pendingStart: number;
   pendingLength: number;
 };
-type FSStream = { node: FSNode; flags: number; position: number; mayo?: OpenFile };
+type FSStream = { node: FSNode; flags: number; position: number; mayo?: OpenFile; remote?: RemoteReadState };
 
 export type MAYOFS = {
   /** Pass to FS.mount. */
@@ -89,10 +99,12 @@ export type MAYOFS = {
   closeOpenFiles(): string[];
 };
 
-export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
+export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS, remote: RemoteFiles): MAYOFS {
   const openStreams = new Set<FSStream>();
+  // Link targets by path, valid while the file's size and date are unchanged.
+  const links = new Map<string, { size: number; mtime: number; url?: string }>();
 
-  /** An FS.ErrnoError with a `code` name, which PROXYFS needs to pass the error to other tools. */
+  /** An FS.ErrnoError with a `code` name (used to recognise ENOENT below). */
   function errno(name: ErrnoName): Error {
     return Object.assign(new FS.ErrnoError(ERRNO[name]), { code: name });
   }
@@ -135,6 +147,64 @@ export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
     node.size = kind === "directory" ? 4096 : size;
     node.timestamp = mtime || Date.now();
     return node;
+  }
+
+  /** The URL if the file at `path` is a link. Reads only small files. */
+  function linkTarget(path: string, stat: MayoIOStat): string | undefined {
+    if (stat.kind !== "file" || stat.size === 0 || stat.size > LINK_MAX_SIZE) return undefined;
+    const known = links.get(path);
+    if (known && known.size === stat.size && known.mtime === stat.mtime) return known.url;
+    let url: string | undefined;
+    try {
+      url = parseLink(new TextDecoder().decode(fs.readFile(path)));
+    } catch {
+      // Unreadable: treat it as an ordinary file, which will report the error when opened.
+    }
+    links.set(path, { size: stat.size, mtime: stat.mtime, url });
+    return url;
+  }
+
+  function createRemoteNode(parent: FSNode, name: string, file: RemoteFile, virtual: boolean): FSNode {
+    const node = FS.createNode(parent, name, FILE_MODE, 0);
+    node.node_ops = nodeOps;
+    node.stream_ops = streamOps;
+    node.size = file.size;
+    node.timestamp = file.mtime;
+    node.remote = file;
+    node.virtual = virtual;
+    return node;
+  }
+
+  /**
+   * For a missing name such as reads.bam.bai: if reads.bam (or reads) is a link, the same suffix
+   * on its URL, if the server has it.
+   */
+  function remoteSibling(parent: FSNode, name: string): RemoteFile | undefined {
+    for (let dot = name.lastIndexOf("."); dot > 0; dot = name.lastIndexOf(".", dot - 1)) {
+      const path = join(parent, name.slice(0, dot));
+      let url: string | undefined;
+      try {
+        url = linkTarget(path, fs.stat(path));
+      } catch {
+        continue;
+      }
+      if (!url) continue;
+      const sibling = new URL(url);
+      sibling.pathname += name.slice(dot);
+      return remote.stat(sibling.href);
+    }
+    return undefined;
+  }
+
+  /** Before writing to a link: make it an ordinary file in the folder. */
+  function makeLocal(node: FSNode): void {
+    if (!node.remote) return;
+    const path = relativePath(node);
+    if (node.virtual) call(() => fs.create(path, "file"));
+    node.size = node.virtual ? 0 : call(() => fs.stat(path)).size;
+    node.timestamp = Date.now();
+    node.remote = undefined;
+    node.virtual = false;
   }
 
   function writersOf(node: FSNode): OpenFile[] {
@@ -213,6 +283,7 @@ export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
     },
     setattr(node: FSNode, attr: { mode?: number; timestamp?: number; size?: number }) {
       if (attr.size !== undefined) {
+        makeLocal(node);
         const size = attr.size;
         const writers = writersOf(node);
         if (writers.length > 0) {
@@ -231,8 +302,23 @@ export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
       if (attr.timestamp !== undefined) node.timestamp = attr.timestamp;
     },
     lookup(parent: FSNode, name: string): FSNode {
-      const stat = call(() => fs.stat(join(parent, name)));
-      return createNode(parent, name, stat.kind, stat.size, stat.mtime);
+      const path = join(parent, name);
+      let stat: MayoIOStat;
+      try {
+        stat = call(() => fs.stat(path));
+      } catch (error) {
+        const sibling = (error as { code?: string }).code === "ENOENT" ? remoteSibling(parent, name) : undefined;
+        if (sibling) return createRemoteNode(parent, name, sibling, true);
+        throw error;
+      }
+      const url = linkTarget(path, stat);
+      if (!url) return createNode(parent, name, stat.kind, stat.size, stat.mtime);
+      const file = remote.stat(url);
+      if (!file) {
+        remote.report(`${path} links to ${url}, which cannot be read (missing, or the server does not allow cross-origin requests)`);
+        throw errno("EIO");
+      }
+      return createRemoteNode(parent, name, file, false);
     },
     readdir(node: FSNode): string[] {
       const names = call(() => fs.list(relativePath(node))).map(entry => entry.name);
@@ -274,6 +360,13 @@ export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
     open(stream: FSStream) {
       if (FS.isDir(stream.node.mode)) return;
       const access = stream.flags & O_ACCMODE;
+      if (stream.node.remote) {
+        if (access === O_RDONLY) {
+          stream.remote = { file: stream.node.remote, next: 0, streak: 0 };
+          return;
+        }
+        makeLocal(stream.node);
+      }
       const file: OpenFile = { readSize: 0, cacheStart: 0, pendingStart: 0, pendingLength: 0 };
       if (access !== O_WRONLY) {
         ensureReader(file, stream.node);
@@ -303,6 +396,14 @@ export function createMAYOFS(FS: EmscriptenFSInternals, fs: MayoFS): MAYOFS {
      * So fetch up to DATA_CAPACITY bytes at once and serve the following reads from that block.
      */
     read(stream: FSStream, buffer: Int8Array, offset: number, length: number, position: number): number {
+      if (stream.remote) {
+        try {
+          return remote.readStream(stream.remote, buffer, offset, length, position);
+        } catch (error) {
+          if (isReadError(error)) throw errno("EIO");
+          throw error;
+        }
+      }
       const file = stream.mayo;
       if (!file) throw errno(FS.isDir(stream.node.mode) ? "EISDIR" : "EBADF");
       const id = ensureReader(file, stream.node);
