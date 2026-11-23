@@ -1,0 +1,18 @@
+# GATK commands run by `npm run build:gatk -- trace`, in the generated test data folder
+# (ref.fa, reads.bam; see scripts/build-gatk.mjs).
+# One command per line, split on spaces (no quoting). Outputs go to out/. Order matters: later
+# commands read earlier outputs. Add a line for each tool the site should support, then retrace.
+# GATK with no arguments (the tool list) always runs first.
+HaplotypeCaller -R ref.fa -I reads.bam -O out/hc.vcf.gz
+HaplotypeCaller -R ref.fa -I reads.bam -ERC GVCF -O out/hc.g.vcf.gz
+GenotypeGVCFs -R ref.fa -V out/hc.g.vcf.gz -O out/gt.vcf.gz
+Mutect2 -R ref.fa -I reads.bam -O out/m2.vcf.gz
+FilterMutectCalls -R ref.fa -V out/m2.vcf.gz -O out/m2f.vcf.gz
+SelectVariants -V out/hc.vcf.gz -select-type SNP -O out/snps.vcf.gz
+VariantFiltration -V out/hc.vcf.gz --filter-expression QD<2.0 --filter-name lowQD -O out/filt.vcf.gz
+MarkDuplicates -I reads.bam -O out/md.bam -M out/md.txt
+BaseRecalibrator -R ref.fa -I reads.bam --known-sites out/hc.vcf.gz -O out/recal.table
+ApplyBQSR -R ref.fa -I reads.bam --bqsr-recal-file out/recal.table -O out/bqsr.bam
+CreateSequenceDictionary -R ref.fa -O out/ref2.dict
+CollectAlignmentSummaryMetrics -R ref.fa -I reads.bam -O out/asm.txt
+CountReads -I reads.bam
