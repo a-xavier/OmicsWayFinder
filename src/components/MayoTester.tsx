@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAYO_CDN, Mayo, urlFileName, type MayoDirectory, type MayoEntry, type MayoExecResult, type MayoToolInfo, type MayoToolSpec } from '../lib/execution_backend/emscripten/mayo'
-import { folderPermission, forgetFolder, loadFolder, requestFolderPermission, saveFolder } from '../lib/execution_backend/emscripten/mayo-folder-store'
+import { MAYO_CDN, Mayo, type MayoDirectory, type MayoEntry, type MayoExecResult, type MayoToolInfo, type MayoToolSpec } from '../lib/execution_backend/emscripten/mayo'
+import { folderPermission, forgetFolder, loadFolder, pickFolder, requestFolderPermission, saveFolder } from '../lib/execution_backend/shared/folder-store'
 import { useLeaveGuard } from '../lib/useLeaveGuard'
 import './MayoTester.css'
-
-type DirectoryPickerWindow = typeof window & {
-  showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>
-}
 
 type LogEntry = { id: number; time: string; action: string; ok: boolean; output: string; seconds?: number }
 
@@ -161,13 +157,9 @@ export default function MayoTester() {
   }
 
   async function chooseDirectory() {
-    const picker = (window as DirectoryPickerWindow).showDirectoryPicker
-    if (!picker) {
-      addLog('Choose folder', false, 'Directory selection is not supported in this browser.')
-      return
-    }
     try {
-      const selected = await picker.call(window, { mode: 'readwrite' })
+      const selected = await pickFolder()
+      if (!selected) return
       setDirectory(selected)
       setSavedFolder(null)
       let saved = ''
@@ -181,7 +173,6 @@ export default function MayoTester() {
       addLog('Choose folder', true, `Selected "${selected.name}".${saved}`)
       await run(`init "${selected.name}"`, () => initFolder(selected))
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === 'AbortError') return
       addLog('Choose folder', false, cause instanceof Error ? cause.message : String(cause))
     }
   }
@@ -382,11 +373,10 @@ export default function MayoTester() {
               onSubmit={event => {
                 event.preventDefault()
                 const url = remoteUrl.trim()
-                const target = saveAs.trim() || urlFileName(new URL(url, document.baseURI).href)
-                if (busy || !url || !target) return
-                void run(`download ${url} → ${target}`, async () => {
-                  const bytes = await getMayo().download(url, target)
-                  return `Saved ${formatBytes(bytes)} to ${target}.`
+                if (busy || !url) return
+                void run(`download ${url}`, async () => {
+                  const { path, bytes } = await getMayo().download(url, saveAs.trim() || undefined)
+                  return `Saved ${formatBytes(bytes)} to ${path}.`
                 }, true)
               }}
             >

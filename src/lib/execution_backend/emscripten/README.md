@@ -41,41 +41,77 @@ mayo.close();                                      // stop the workers, reject p
 | `exec(program, args, redirects?, options?)` | Done | Runs one program with exact arguments (no splitting) and redirections. |
 | `cancel()` | Done | Stops the running `exec`: its workers are terminated, the pipelines after `&&` do not start, and it resolves with exit code 130 and `cancelled: true`. Does nothing when idle. |
 | `addUrl(url, path?)` | Done | Adds a remote file to the folder as a URL link, without downloading it (checks CORS and range support first). Tools then use `path` (default: the URL's file name) like any file. Does not need a loaded tool. Returns `{ path, size }`. See [Remote Files (URLs)](#remote-files-urls). |
-| `download(url, path)` | Done | Streams a URL into the selected folder (1 MiB at a time, never whole in memory). Returns the number of bytes. |
+| `download(url, path?)` | Done | Streams a URL into the selected folder (1 MiB at a time, never whole in memory). `path` defaults to the URL's file name. Returns `{ path, bytes }`. |
 | `close()` | Done | Terminates all Mayo workers and rejects pending requests. |
 
-The tree is a `MayoDirectory` whose `children` are `MayoFile` or `MayoDirectory` entries (`mayo.protocol.ts`). The root is always a directory.
+The tree is a `MayoDirectory` whose `children` are `MayoFile` or `MayoDirectory` entries (`protocol.ts`). The root is always a directory.
 
 The caller selects the directory and handles browser support and permission prompts. The File System Access directory picker is only available in Chromium browsers (Chrome, Edge). The handle is not persisted between sessions yet.
 
-### Files
+### Architecture
 
-| File | Runs in | Role |
-|---|---|---|
-| `mayo.ts` | Main thread | Async client API. Sends requests to the worker and matches replies by id. |
-| `mayo.protocol.ts` | Shared | Tree, tool, pipeline and result types; main ↔ coordinator messages. |
-| `mayo.worker.ts` | Coordinator | Processes requests one at a time (except `cancel`); routes tree operations to `MayoTree`, file operations to its own `MayoFS` client and `exec` to `MayoTools`. |
-| `mayo-folder-store.ts` | Page | Remembers the selected folder in IndexedDB and re-requests permission (see [Remembering the Folder](#remembering-the-folder)). |
-| `mayo-tree.ts` | Coordinator | `MayoTree`: scans the folder into a tree for display. |
-| `mayo-fs.ts` | Coordinator, tool workers | `MayoIO` (coordinator: starts the I/O worker, sets the folder, creates one connection per client) and `MayoFS` (a synchronous client of the I/O worker). |
-| `mayo-tools.ts` | Coordinator | `MayoTools`: tool registry, warm tool workers, running pipelines, cancel. |
-| `mayo-tool.worker.ts` | Tool worker | Hosts one Emscripten instance (port of Aioli's worker logic): set-up, stdio devices and redirections, `callMain`. |
-| `mayo-tool.protocol.ts` | Shared | Coordinator ↔ tool worker messages. |
-| `mayo-pipe.ts` | Tool workers | Ring buffer in a SharedArrayBuffer, the pipe between two stages. |
-| `mayo-emscripten-fs.ts` | Tool workers | `MAYOFS`: Emscripten filesystem on top of `MayoFS`, mounted at `/shared/data`. |
-| `mayo-url-fs.ts` | Coordinator, tool workers | `RemoteChecker` (checks URLs), `RemoteFiles` (a tool's range reads through the I/O worker), the link format and `linkUrl`, `URLFS` (read-only mounts for URLs typed in commands) and `downloadToFolder`. |
-| `mayo-remote-cache.ts` | I/O worker | `RemoteCache`: range requests with `fetch` and a 64 MiB chunk cache shared by every tool. |
-| `mayo-io.protocol.ts` | Shared | Shared-memory layout, I/O requests and control messages. |
-| `mayo-io.worker.ts` | I/O worker | Performs the asynchronous File System Access calls and remote reads for every client. |
+Mayo runs in four kinds of thread. Each folder of this directory holds the code of one of them:
+
+```text
+main thread (React UI)
+   │  mayo.ts: async API, postMessage
+   ▼
+coordinator/ ── one worker: folder tree, tool registry, runs commands (never runs a tool itself)
+   │  starts                         │  starts
+   ▼                                 ▼
+tool/ ×N ── one worker per          io/ ── one worker: every file and remote read, for all clients
+ Emscripten instance                  ▲   one channel (SharedArrayBuffer + MessagePort) per client:
+   │                                  │   every tool worker, and the coordinator itself
+   │  stage k stdout ══ pipe/ (ring buffer in a SharedArrayBuffer) ══▶ stage k+1 stdin
+```
+
+A command's journey: `mayo.exec("a | b && c")` → `../shared/command.ts` parses it into pipelines → the coordinator (`coordinator/runner.ts`) checks URLs, takes a worker per stage from the registry (`coordinator/tools.ts`) and connects them with pipes → each tool worker (`tool/worker.ts`) mounts the folder and URLs, sets up stdin/stdout/stderr and calls `main()` → file calls block on the I/O worker (`io/`) → results go back up and are combined.
+
+| File | Role |
+|---|---|
+| **Top level** (main thread) | |
+| `mayo.ts` | `Mayo`, the public API. Sends requests to the coordinator and matches replies by id. |
+| `protocol.ts` | Public types (tree, tools, stages, results) and main ↔ coordinator messages. |
+| **`coordinator/`** (the Mayo worker) | |
+| `worker.ts` | Message loop: one request at a time (except `cancel`), routed to the classes below. |
+| `tools.ts` | `ToolRegistry` (loaded tools, warm workers, glue downloads) and `ToolInstance` (one tool worker seen from here). |
+| `runner.ts` | `CommandRunner`: runs `&&` chains and pipelines, cancel, combines stage results. |
+| `folder-tree.ts` | `FolderTree`: scans the folder into a tree for display. |
+| `remote.ts` | `RemoteChecker` (checks URLs before use), `linkUrl` (`addUrl`) and `downloadToFolder` (`download`). |
+| **`tool/`** (one worker per Emscripten instance) | |
+| `worker.ts` | Message loop and one run: mount, redirect, `callMain`, flush, save, report. |
+| `protocol.ts` | Coordinator ↔ tool worker messages. |
+| `load.ts` | `loadModule`: evaluates the biowasm glue and instantiates the `.wasm` (compiled once per tool). |
+| `mounts.ts` | `Mounts`: the folder at `/shared/data` and URLs at `/shared/urls/<n>`. |
+| `stdio.ts` | `Stdio`: `/dev/stdin` and `/dev/stdout` devices (pipes or captured output), redirections, broken pipes. |
+| `output.ts` | `RunOutput`: captured stdout/stderr (16 MiB cap) and live stderr. |
+| `folder-fs.ts` | `FOLDERFS`: Emscripten filesystem for the selected folder, on top of `IOClient`; also follows URL links. |
+| `url-fs.ts` | `URLFS`: read-only Emscripten filesystem for URLs typed in commands. |
+| `remote-files.ts` | `RemoteFiles`: a tool's remote stats and range reads (with read-ahead) through the I/O worker. |
+| `emscripten.ts` | Emscripten types, errno codes and helpers shared by the two filesystems (`createFSNode`, `nodeAttributes`, `seekPosition`). |
+| **`io/`** (the I/O worker, and its clients) | |
+| `worker.ts` | Performs the asynchronous File System Access calls and remote reads for every client. |
+| `protocol.ts` | Shared-memory layout (`connectionViews`, `DATA_CAPACITY`), remote chunk sizes, I/O requests, control messages and shared error messages. |
+| `host.ts` | `IOHost` (coordinator): starts the I/O worker, sets the folder, creates one connection per client. |
+| `client.ts` | `IOClient`: synchronous calls to the I/O worker (`Atomics.wait`), used by the coordinator and every tool worker. `WriteBuffer` collects small writes into 1 MiB blocks (FOLDERFS, `download`). |
+| `remote-cache.ts` | `RemoteCache`: range requests and a 64 MiB chunk cache shared by every tool. |
+| **`pipe/`** | |
+| `pipe.ts` | The ring buffer between two stages. Tested by `pipe.test.mjs`. |
+| **`shared/`** (used by several threads) | |
+| `urls.ts` | URL helpers and types (`headRemoteFile`, `fetchFile`, `splitUrl`, `urlFileName`, `RemoteFile`, …). |
+| `url-links.ts` | The link file format (`mayo-url <url>`) and which files can be links (`mayBeLink`). |
+
+The command parser (`parseCommand` / `parsePipeline`, with the `Stage` and `Redirects` types), the folder path helpers used by the I/O worker, and the folder picker and store are not Mayo-specific: they live in [../shared](../shared), shared with the Java backend.
 
 ### Remembering the Folder
 
-`mayo-folder-store.ts` saves the selected folder's handle so the next visit can reopen it without the folder picker:
+`../shared/folder-store.ts` saves the selected folder's handle so the next visit can reopen it without the folder picker:
 
 ```ts
-import { folderPermission, forgetFolder, loadFolder, requestFolderPermission, saveFolder } from "./mayo-folder-store";
+import { folderPermission, forgetFolder, loadFolder, pickFolder, requestFolderPermission, saveFolder } from "../shared/folder-store";
 
-await saveFolder(directory);                       // after showDirectoryPicker
+const directory = await pickFolder();              // in a click; null if cancelled
+await saveFolder(directory);
 const saved = await loadFolder();                  // on page load; undefined if none
 if (saved && (await folderPermission(saved)) === "granted") await mayo.init(saved);
 // otherwise, in a click handler:
@@ -90,19 +126,6 @@ await forgetFolder();
 - The test bench saves the folder when it is chosen, initializes it on load when permission is granted, and has "Reconnect" and "Forget folder" buttons.
 
 ### Threads
-
-```text
-main thread (React UI)
-   │  postMessage
-   ▼
-mayo.worker.ts ── coordinator: tree, tool registry, pipeline set-up, results (runs no tool)
-   │  creates            │  owns
-   ▼                     ▼
-mayo-tool.worker.ts ×N   mayo-io.worker.ts ── folder access + remote range reads + chunk cache
- (one Emscripten           ▲   one channel (SharedArrayBuffer + MessagePort) per client:
-  instance each)           │   every tool worker, and the coordinator itself
-   │  stage k stdout ══ ring buffer (SharedArrayBuffer) ══▶ stage k+1 stdin
-```
 
 - The UI thread never blocks: every `Mayo` method is async.
 - The coordinator processes one request at a time, in arrival order, so a rescan and a read cannot race. `cancel` skips the queue so it can reach the running `exec`.
@@ -140,7 +163,7 @@ Every tool on the biowasm CDN is self-hosted, at its latest version (47 tools, 1
 - The tool list, versions, programs and files come from [`biowasm.json`](https://github.com/biowasm/biowasm/blob/main/biowasm.json), the config biowasm builds the CDN from. The last listed version is used.
 - Each program has `<program>.js` and `<program>.wasm`; tools whose config lists `data` also have `<program>.data` (sample files and preloaded data).
 - `aioli` and `base` are skipped: they are Aioli's own library and base module, not command-line tools.
-- Files already present are not downloaded again. `npm run fetch:tools -- bcftools seqtk` updates only those tools.
+- Files already present are not downloaded again unless `--overwrite` is passed. `npm run fetch:tools -- bcftools seqtk` downloads only those tools; `npm run build:tools` overwrites all BioWasm files and builds GATK.
 - It writes `public/tools/manifest.json` (`tool`, `version`, `programs`, `description`), which the test bench reads to list the tools.
 
 The test bench lists the manifest as checkboxes (one per tool, plus one per program for tools with several), with a filter and a choice between the local copy and the CDN. The Load button loads all ticked programs that are not loaded yet in one call (ticked programs that are already loaded are skipped and listed in the log); loading again adds tools. A "Loaded" list under the button shows every registered program with its tool, version, source (local or CDN), and lazy status.
@@ -157,7 +180,7 @@ How it works (same model as Aioli, but one worker per program):
 - stdin, stdout and stderr are character devices (`/dev/stdin`, `/dev/stdout`) reopened as fd 0/1/2 before each run: a pipe, a redirection file, or the captured output (stdin: end of file). stdout is decoded to text only at the end, so binary output is not mangled.
 - stdout and stderr are each capped at 16 MiB per run (`OUTPUT_LIMIT`). The rest is dropped and a `[Mayo] … was cut` line is added to stderr. Without the cap, `samtools view big.bam` (gigabytes of SAM text, all kept in memory and copied to the page) crashed the tab. Large outputs belong in files (`-o` or `>`) or the next stage of a pipe.
 - A program that is already loaded from the same tool and version is skipped (also when listed twice in one call). The same program name from another tool or version is rejected, since `exec` finds programs by name. If one tool in a `loadTools` call fails, the whole call is rolled back.
-- A wrong URL usually returns the dev server's or GitHub Pages' HTML page; `MayoTools` detects it and reports which URL failed.
+- A wrong URL usually returns the dev server's or GitHub Pages' HTML page; `ToolRegistry` detects it and reports which URL failed.
 
 ### Tools and the Selected Folder
 
@@ -174,14 +197,14 @@ await mayo.exec("samtools view -b -o /tmp/tmp.bam reads.bam");     // in this wo
 
 ```text
 /shared             in memory, private to each tool worker
-/shared/data        the selected folder (MAYOFS, read-write)     ← working directory, shared by all tools
+/shared/data        the selected folder (FOLDERFS, read-write)     ← working directory, shared by all tools
 /shared/<tool>      this tool's sample data
 /shared/urls/<n>    URLs typed in commands (URLFS, read-only)
 ```
 
-`MAYOFS` (`mayo-emscripten-fs.ts`) is a custom Emscripten filesystem modelled on Emscripten's `WORKERFS`. Each node operation becomes a synchronous `MayoFS` call through the I/O worker:
+`FOLDERFS` (`tool/folder-fs.ts`) is a custom Emscripten filesystem modelled on Emscripten's `WORKERFS`. Each node operation becomes a synchronous `IOClient` call through the I/O worker:
 
-| Emscripten operation | `MayoFS` / I/O request | Browser API |
+| Emscripten operation | `IOClient` / I/O request | Browser API |
 |---|---|---|
 | `lookup`, `getattr` (stat) | `stat` → kind, size, mtime | `getFileHandle` / `getDirectoryHandle`, `getFile()` |
 | `readdir` | `list` → names and kinds | `directory.entries()` |
@@ -228,8 +251,8 @@ await mayo.exec("samtools faidx ref.fa 2> faidx.log");        // stderr to a fil
 await mayo.exec("samtools", ["view", "-h", "my file.bam"], { stdout: { path: "out.sam", append: false } });
 ```
 
-- `parsePipeline` (in `mayo.ts`) takes out `< file`, `> file`, `>> file`, `2> file` and `2>> file` (also without the space, `>file`). `1>` is the same as `>`. In a pipeline, `<` is only allowed on the first stage and `>`/`>>` on the last; `2>` works on any stage.
-- In the tool worker, `redirectStdio` closes fd 0, 1 or 2 and opens the file in its place, so the program writes straight to the file: byte for byte (BAM works), no 16 MiB cap, nothing kept in memory. A redirected stream comes back empty in the result.
+- `parsePipeline` (in `../shared/command.ts`) takes out `< file`, `> file`, `>> file`, `2> file` and `2>> file` (also without the space, `>file`). `1>` is the same as `>`. In a pipeline, `<` is only allowed on the first stage and `>`/`>>` on the last; `2>` works on any stage.
+- In the tool worker, `Stdio.redirect` (`tool/stdio.ts`) closes fd 0, 1 or 2 and opens the file in its place, so the program writes straight to the file: byte for byte (BAM works), no 16 MiB cap, nothing kept in memory. A redirected stream comes back empty in the result.
 - Paths follow the same rules as program arguments: relative to the selected folder, and the parent folder must exist.
 - Like a shell, the files are opened before the program starts. If one cannot be opened, the program does not run, stderr gets `mayo: <path>: No such file or directory` (or `Is a directory`, `Permission denied`) and the exit code is 1.
 - After the run, Mayo calls `fflush(0)` so the C library writes what it still buffers (a file on stdout is fully buffered, unlike the terminal), then closes the file, which saves it. A failed save adds `[Mayo] could not save …` to stderr and sets the exit code to 1. stdout and stderr then go back to the result for the next run.
@@ -256,7 +279,7 @@ Link files:
 
 - A link is a small text file in the selected folder, named after the URL (or the given path), with a single line: `mayo-url https://example.org/data/reads.bam`. It lives in the real folder, so it is kept for the next visit and can be renamed, moved or deleted in Finder like any file. The tree marks it with its URL (`MayoFile.url`).
 - `addUrl` checks the URL before writing the link: a `HEAD` gives the size, then a `Range: bytes=0-0` probe must return `206`. The probe is an async `fetch` that is aborted, so a server ignoring `Range` does not send the whole file. It fails with a clear message if the server refuses (not found, CORS blocked, no range support), if the parent folder does not exist, or if an ordinary file already has that name (an existing link is replaced).
-- `MAYOFS` recognises links when a tool looks a file up: files of at most 4 KiB starting with `mayo-url ` are read once (and again only if their size or date changes). The tool sees the remote file's size and date, and its reads go to the remote file.
+- `FOLDERFS` recognises links when a tool looks a file up: files of at most 4 KiB starting with `mayo-url ` are read once (and again only if their size or date changes). The tool sees the remote file's size and date, and its reads go to the remote file.
 - Index files: if a name is missing from the folder but extends a link (`reads.bam.bai`, `ref.fa.fai`, `calls.vcf.gz.tbi` next to the links `reads.bam`, `ref.fa`, `calls.vcf.gz`), Mayo asks the server for the link's URL plus that suffix. A local index file, if there is one, takes precedence. Without a remote index, `samtools index reads.bam` reads the remote BAM once and writes `reads.bam.bai` into the folder.
 - Writing to a link replaces it with an ordinary file, as overwriting any file would (`samtools sort -o reads.bam …`). `removeFile` and `rm` remove the link, not the remote file.
 - If the URL stops working, opening the link fails and stderr gets `[Mayo] reads.bam links to <url>, which cannot be read …`.
@@ -268,7 +291,7 @@ URLs typed in commands:
 
 Reading:
 
-- Remote reads go through the I/O worker (`mayo-remote-cache.ts`): async `fetch` range requests and an LRU cache of 1 MiB chunks, capped at 64 MiB and shared by every tool worker. A tool blocks on its own channel, as for folder reads. Sequential reads ramp read-ahead up to 8 chunks; random reads fetch one chunk. Repeated runs, and other stages, reuse cached chunks.
+- Remote reads go through the I/O worker (`io/remote-cache.ts`): async `fetch` range requests and an LRU cache of 1 MiB chunks, capped at 64 MiB and shared by every tool worker. A tool blocks on its own channel, as for folder reads. Sequential reads ramp read-ahead up to 8 chunks; random reads fetch one chunk. Repeated runs, and other stages, reuse cached chunks.
 - URLs are checked (`HEAD` and a range probe) by the coordinator before any stage starts, with `RemoteChecker`.
 - The exec result has `remote: { requests, bytes }` when a remote file was read, and each stage has its own; the test bench shows it as "fetched X in N range requests".
 
@@ -287,30 +310,30 @@ Server requirements and limitations:
 
 ### Synchronous File Bridge
 
-Emscripten filesystem callbacks (`open`, `read`, `write`, ...) are synchronous, but File System Access calls on a user-selected folder are asynchronous (`getFile`, `createWritable`, ...). Synchronous access handles exist only for OPFS, which we do not use. `MayoFS` bridges the two:
+Emscripten filesystem callbacks (`open`, `read`, `write`, ...) are synchronous, but File System Access calls on a user-selected folder are asynchronous (`getFile`, `createWritable`, ...). Synchronous access handles exist only for OPFS, which we do not use. `IOClient` bridges the two:
 
-1. `MayoFS` writes `PENDING` into shared memory, posts the request to the I/O worker, and calls `Atomics.wait`.
+1. `IOClient` writes `PENDING` into shared memory, posts the request to the I/O worker, and calls `Atomics.wait`.
 2. The I/O worker `await`s the browser file API and copies the reply into the shared buffer.
 3. It sets the status, length and `DONE` state, then calls `Atomics.notify`.
-4. `MayoFS` wakes up, copies the bytes, and returns them, or throws the error text.
+4. `IOClient` wakes up, copies the bytes, and returns them, or throws the error text.
 
 Details:
 
-- The `SharedArrayBuffer` holds four `Int32` control slots (state, status, length) followed by a 1 MiB data area (`mayo-io.protocol.ts`). The data area carries replies (read bytes, errors) and write payloads.
+- The `SharedArrayBuffer` holds four `Int32` control slots (state, status, length) followed by a 1 MiB data area (`io/protocol.ts`). The data area carries replies (read bytes, errors) and write payloads.
 - Reads use read handles: `openRead` gets the `File` once and returns its id and size, `read(id, offset, length)` returns up to 1 MiB using `File.slice`, and `close` releases it. `readFile` reads in 1 MiB chunks this way, so the I/O worker never loads a whole file.
 - `stat` and `list` return JSON (`{ kind, size, mtime }`, `[{ name, kind }]`); the path `""` is the selected folder. A reply larger than the 1 MiB data area fails instead of being truncated.
-- Errors keep the browser's `DOMException` name (`NotFoundError`, ...), which `MAYOFS` maps to errno codes.
+- Errors keep the browser's `DOMException` name (`NotFoundError`, ...), which `FOLDERFS` maps to errno codes.
 - `writeFile` uses write handles, the same shape Emscripten's open/write/close calls will need later:
   1. `openWrite` creates the file if needed, opens a `createWritable()` stream, and returns a handle id.
   2. Each `write` copies up to 1 MiB into the data area before posting; the I/O worker copies it out (file streams reject shared-memory views) and appends it.
-  3. `close` commits. The browser writes to a temporary file and only replaces the target on close, so a failed write leaves the original untouched; on error `MayoFS` sends `abort` to discard it.
+  3. `close` commits. The browser writes to a temporary file and only replaces the target on close, so a failed write leaves the original untouched; on error `IOClient` sends `abort` to discard it.
 - Write semantics are POSIX-like: missing parent folders are not created, and writing to a path that is a directory fails.
 - In a real folder, Chrome's temporary file is visible as `<name>.crswap` while a write is in progress. If the I/O worker is killed mid-write (timeout, `close()`, tab closed), that file may be left behind.
 - `removeFile` behaves like `unlink()`: it checks the entry is a file before calling `removeEntry`, because `removeEntry` would also delete an empty directory. Removing a missing file or a directory fails.
 - The state is set to `PENDING` before posting, so the reply's notify cannot be missed.
 - The coordinator starts the I/O worker once and waits asynchronously for its `ready` message. This handshake is required: a worker created from another worker only starts once its parent returns to the event loop, so blocking right after `new Worker()` would hang until the timeout. For the same reason, tool workers and their channels are all set up (and `ready`) before any stage blocks.
-- Several clients: the coordinator and each tool worker have their own `MessageChannel` and SharedArrayBuffer (`MayoIO.connect`). A client has at most one request in flight, so replies cannot mix. Open handles are tracked per client; `disconnect` (a worker was cancelled or replaced) aborts its writers, so the target files are left unchanged. `init` sends the new folder to the I/O worker (`root`), which drops every open handle.
-- Paths are relative to the selected folder. `.` or `..` segments are rejected, so a path cannot escape the folder (Emscripten resolves them before calling `MAYOFS`). Empty paths are only allowed for `stat` and `list`.
+- Several clients: the coordinator and each tool worker have their own `MessageChannel` and SharedArrayBuffer (`IOHost.connect`). A client has at most one request in flight, so replies cannot mix. Open handles are tracked per client; `disconnect` (a worker was cancelled or replaced) aborts its writers, so the target files are left unchanged. `init` sends the new folder to the I/O worker (`root`), which drops every open handle.
+- Paths are relative to the selected folder. `.` or `..` segments are rejected, so a path cannot escape the folder (Emscripten resolves them before calling `FOLDERFS`). Empty paths are only allowed for `stat` and `list`.
 - Each request times out after 120 seconds (a remote read may fetch several MiB). The client's connection is then dropped; the coordinator reconnects on its next file operation.
 
 ### Cross-Origin Isolation (COOP/COEP)
@@ -393,12 +416,12 @@ const { exitCode, stages } = await mayo.exec("seqtk seq -a < reads.fq | samtools
 Decisions:
 
 - **One worker per tool instance.** `callMain` blocks its thread until the program exits, so stages can only overlap if each runs in its own worker. Each tool stays single-threaded (no pthreads). One `exec` runs at a time; there is no limit on the number of stages.
-- **Only the selected folder is shared.** Every tool worker mounts the folder (MAYOFS) through its own channel to the I/O worker. `/tmp` and sample data stay private to each worker.
+- **Only the selected folder is shared.** Every tool worker mounts the folder (FOLDERFS) through its own channel to the I/O worker. `/tmp` and sample data stay private to each worker.
 - **Remote reads live in the I/O worker**, with one cache for all tools (see [Remote Files](#remote-files-urls)).
 - **Exit code: `pipefail`.** The result's `exitCode` is the first non-zero exit code among the stages, except stages stopped by a broken pipe. `0` if all succeeded.
 - **stderr is streamed live** when `exec` gets `onStderr`; tool workers send it at most every 100 ms.
 
-The ring buffer (`mayo-pipe.ts`):
+The ring buffer (`pipe/pipe.ts`):
 
 - A SharedArrayBuffer: an Int32 header (bytes written, bytes read, writer closed, reader closed, a change counter), then 1 MiB of data. Counters wrap at 2³², so the capacity is a power of two.
 - **Writer** (stage k's fd 1): copies what fits; when the buffer is full it waits with `Atomics.wait` (backpressure, so a fast producer cannot fill memory). If the reader has closed it throws `PipeClosedError`.
@@ -408,7 +431,7 @@ The ring buffer (`mayo-pipe.ts`):
 - Broken pipe: writing after the reader exited throws out of the device's `write`, which ends `main` (like SIGPIPE). The stage gets exit code 141 and `brokenPipe: true`, its stderr after that point is dropped, and its worker is replaced.
 - After `main` returns, the stage calls `fflush(0)` (musl fully buffers stdout when it is not a terminal), then closes its pipe ends.
 
-Running a pipeline (`MayoTools.exec`):
+Running a pipeline (`CommandRunner.exec`, `coordinator/runner.ts`):
 
 1. `parseCommand` splits on ` && ` (see [Chaining with &&](#chaining-with-)), then `parsePipeline` splits each side on ` | ` and checks the operators (`<` first stage only, `>`/`>>` last stage only).
 2. Every URL in the arguments is checked. A stage with a bad URL does not run: its stderr has the reason and its exit code is 1.
@@ -433,7 +456,7 @@ Tested in Chrome (400 000-read SAM on an OPFS folder):
 - `samtools view big.sam | head -n 3` ends in 34 ms: `samtools` gets a broken pipe (141, ignored), exit code 0, no error printed.
 - Three stages, a `lazy` tool (`wc`) started on first use, `<`, `>>` and `2>` on a middle stage, a failing middle stage (exit code 1), and live stderr tagged by stage.
 - Cancel during a sort: exit code 130 at once, an existing output file is unchanged, no `.crswap` is left, and the next pipeline runs normally.
-- Node: `node --test mayo-pipe.test.mjs mayo.test.mjs` (ring buffer with `worker_threads`: 64 MiB through a 64 KiB buffer checked by hash, wrap-around, EPIPE, end of file; and `parseCommand`/`parsePipeline`).
+- Node, from this folder: `node --test ../shared/command.test.mjs pipe/pipe.test.mjs` (ring buffer with `worker_threads`: 64 MiB through a 64 KiB buffer checked by hash, wrap-around, EPIPE, end of file; and `parseCommand`/`parsePipeline`).
 
 ### Chaining with &&
 
@@ -443,8 +466,8 @@ Tested in Chrome (400 000-read SAM on an OPFS folder):
 await mayo.exec("minimap2 -a ref.fa reads.fq | samtools sort -o aln.bam - && samtools index aln.bam");
 ```
 
-- `parseCommand` (in `mayo.ts`) splits on ` && ` and parses each side with `parsePipeline`, so each side has its own redirections. An empty side (`a &&`, `&& b`) is rejected, and so is `&&` without spaces (`a&&b`).
-- The coordinator (`MayoTools.exec`) runs the pipelines one after the other. Every program is checked before anything runs, so a typo in the last pipeline fails before the first one starts. Each pipeline sees the files the previous one wrote, because outputs are saved when a program closes them.
+- `parseCommand` (in `../shared/command.ts`) splits on ` && ` and parses each side with `parsePipeline`, so each side has its own redirections. An empty side (`a &&`, `&& b`) is rejected, and so is `&&` without spaces (`a&&b`).
+- The coordinator (`CommandRunner.exec`) runs the pipelines one after the other. Every program is checked before anything runs, so a typo in the last pipeline fails before the first one starts. Each pipeline sees the files the previous one wrote, because outputs are saved when a program closes them.
 - Result: `stdout` and `stderr` are each pipeline's in turn; `exitCode` is the last pipeline that ran (the first failure, since the chain stops there; `pipefail` applies within each pipeline); `stages` lists every stage that ran, with `pipeline` (0, 1, …) telling which side it belongs to; `remote` sums them all. Stages that did not run are not listed.
 - Live stderr numbers stages across the whole command: in `a | b && c`, `c` is stage 2.
 - `cancel()` stops the running pipeline and the rest of the chain does not start. A cancel sent while workers are still starting is also honoured (exit code 130).
@@ -455,69 +478,3 @@ await mayo.exec("minimap2 -a ref.fa reads.fq | samtools sort -o aln.bam - && sam
 - `||`, `;`, `2>&1`, quoting in command strings, and Aioli's `cat`/`ls` helpers.
 - Running several `exec` at once, or a limit on the number of stages based on memory.
 - Multi-threaded tools (Emscripten pthreads) inside pipes.
-
-## Runtime Model
-
-An Emscripten build is commonly a package containing a `.wasm` module and generated JavaScript glue. The glue initializes the module, provides imports and runtime services, and often exposes a virtual filesystem and a `callMain`-style entrypoint. Treat the package, its tool version, build options, and runtime glue as one versioned artifact.
-
-Before adopting a tool, record:
-
-- Source and exact tool version, license, and reproducible build instructions.
-- Emscripten version and target/runtime ABI.
-- Required data packages, reference files, environment variables, and command arguments.
-- Whether it needs pthreads, shared memory, SIMD, Asyncify, or other special build/runtime features.
-- Startup time, peak linear memory, temporary disk use, output formats, and known unsupported operations.
-
-## Filesystem Design Questions
-
-Emscripten tools typically expect a POSIX-like filesystem. The preferred design is to work directly in a user-selected directory, with inputs, scratch files, and outputs stored on the user's filesystem rather than copied into OPFS. Determine which filesystem implementation the selected build uses and whether it can support that design. Do not assume a `File` mounted by the browser is writable or persistent.
-
-The File System Access API does not automatically turn a selected directory into an Emscripten filesystem. An explicit bridge must adapt the tool's synchronous filesystem calls to browser APIs and handle permissions, asynchronous operations, cancellation, and browser support. Verify that it supports the tool's required operations and large sequential writes without copying whole files into memory.
-
-OPFS is not the default work area. If direct access is not feasible for a browser or tool, report the limitation rather than silently copying data into OPFS. Consider an alternative storage strategy only as an explicit future decision.
-
-The runtime should expose an explicit virtual layout, for example `/input`, `/work`, `/references`, and `/output`, and document which locations are read-only, temporary, persistent, or exported.
-
-## Command and Pipeline Behavior
-
-Define how the backend maps a workflow step to the tool's command and arguments. Determine whether `callMain` or the selected runtime supports the tool's actual CLI behavior, including exit codes, stderr, environment, signals, and working directory.
-
-Prefer bounded stdout-to-stdin streaming for large producer/consumer pipelines when the runtime exposes binary-safe streams. For example, BWA-MEM can emit SAM on stdout directly to `samtools sort` on stdin; `samtools view -b -` is unnecessary if it performs no filtering or transformation. Configure `samtools sort` temporary runs (`-T`) and final output (`-o`) on the disk-backed filesystem. Sorting still needs scratch space, but this avoids storing the full intermediate SAM file.
-
-This kind of pipe requires both single-threaded tools to be active concurrently so the consumer can drain output and apply backpressure. It does **not** require pthreads inside either tool. Phase one allows this bounded concurrency within one declared pipeline, but runs only one pipeline at a time; it does not run independent samples or pipelines in parallel.
-
-If the Emscripten runtime cannot expose a backpressured binary stream between tool instances, use an intermediate only as a fallback. Measure its disk cost; for WGS, prefer a supported compressed or binary intermediate where semantics allow, and do not silently materialize uncompressed SAM.
-
-Do not assume shell syntax, process spawning, signals, or pipes work just because a native build supports them. Validate each capability against the actual Emscripten artifact. Capture logs and errors as text and never infer success from the absence of an exception alone; check exit status and expected outputs.
-
-## Phase-One Execution Model: Single-Threaded
-
-Run one workflow at a time. Host each single-threaded Emscripten tool instance in a Web Worker so long analyses do not block React. A declared streaming pipeline may have a producer and consumer active concurrently, connected by a bounded channel; all other stages and samples remain sequential.
-
-For phase one, use single-threaded tool builds: do not enable Emscripten pthreads or shared WebAssembly memory. Mayo's file bridge already requires cross-origin isolation (see above), but tools themselves stay single-threaded. Only explicitly connected pipeline processes may overlap; avoid independent concurrent jobs.
-
-Record whether a candidate tool requires pthreads. If no single-threaded build exists, defer it or document it as unsupported for phase one rather than silently changing the execution model. Revisit parallel execution only after measuring representative workloads and confirming runtime, filesystem, deployment-header, and resource-limit support.
-
-## Large Files and Persistence
-
-Avoid copying a whole large file into a JavaScript `ArrayBuffer` or Emscripten memory unless the workload explicitly fits a measured memory budget. Test streaming reads, writes, and the total size of intermediate files. Check available disk space where possible, and handle disk exhaustion and lost or revoked directory permission. Access to a previously selected directory may require the user to grant permission again.
-
-A resumable run needs a manifest recording input identity/checksum, tool and build versions, arguments, references, output paths, completed stages, and validation status. Write to temporary output paths; mark a stage complete only after output is closed, validated, and recorded. Recover by checking the manifest and output, then resume at the last valid checkpoint.
-
-## Security and Isolation
-
-The virtual filesystem is not the user's general filesystem. Require explicit user selection and limit access to the chosen directory and necessary permissions. Keep path construction within the configured virtual root, avoid evaluating user-supplied shell strings, and pass arguments as an array when the runtime supports it. Handle untrusted biological files, permission failures, and disk exhaustion as normal error cases.
-
-## First Prototype Milestone
-
-Use one small, existing Emscripten bioinformatics tool with a known version and license. Demonstrate:
-
-1. Load and run its actual `.wasm` plus glue package in the chosen worker/runtime.
-2. Pass an input and arguments; capture stdout, stderr, and exit status.
-3. Produce an output without blocking the UI.
-4. Measure peak memory and storage for a representative input.
-5. Reopen or refresh the app and verify access to the selected directory and its persisted files, then simulate an interrupted/incomplete output.
-6. Document unsupported CLI/runtime features, browser and permission requirements, and the exact boundary between virtual paths and the user-selected directory.
-7. Confirm the selected builds are single-threaded; test a bounded BWA-MEM stdout to samtools-sort stdin pipeline without a full SAM intermediate, including cancellation and backpressure.
-
-Do not claim general Emscripten compatibility or resumability based on one tool passing this test.

@@ -13,6 +13,22 @@ visible.
 
 # **[Open OmicsWayfinder in your browser](https://a-xavier.github.io/OmicsWayFinder/)** 
 
+## Updating vendored tools
+
+Run `npm run build:tools` locally to re-download the latest BioWasm tools into
+`public/tools/`, build the slim GATK jar, and download pinned Java releases into
+`public/java/`. This requires
+Node.js, Java 17+ and internet access; Maven is downloaded if unavailable. Review
+and commit the resulting files to the main branch. The existing Pages workflow
+publishes the committed assets; it does not download or build the tools.
+
+The GATK build uses the existing traced jar list; retracing is a separate step
+when updating GATK or expanding its supported tools. See the
+[GATK recipe](public/java/gatk/README.md) and
+[FastQC recipe](public/java/fastqc/README.md).
+The [Java backend](src/lib/execution_backend/java/README.md) lists the available
+tools, their licences and the current browser limitations.
+
 ## Research Aims
 
 1. **Extract evidence from biological files.** Identify and validate files, then
@@ -71,14 +87,12 @@ Redirection (`<`, `>`, `>>`, `2>`) works. Remote files work as *URL link files* 
 (one line, `mayo-url <url>`), read lazily with HTTP range requests through a cache in the I/O
 worker. Test everything with the Mayo tester page in real Chrome.
 
-1. **Commit the URL link and pipes work.** Not committed yet; all of it is tested in Chrome and
-	with `node --test` (see the "Pipes" and "Remote Files" sections of the emscripten README):
-	- URL links: `mayo-url-fs.ts`, MAYOFS link support, `Mayo.addUrl`, the tester's "Remote files"
-		panel.
-	- Pipes: `mayo-pipe.ts`, `mayo-tool.worker.ts`, the multi-client I/O worker,
-		`mayo-remote-cache.ts`, `parsePipeline`, `cancel()`, live stderr, and the tester's Stop button.
-	- `&&` chains: `parseCommand`, the chain runner in `MayoTools.exec`, `pipeline` on stage results.
-	- The old `mayo-worker.test.mjs` is deleted; `mayo.test.mjs` now tests `parseCommand`/`parsePipeline`.
+1. (Done) URL links, pipes and `&&` chains, committed in `a48cb1b`. The emscripten folder was then
+	reorganised into one subfolder per worker (`coordinator/`, `tool/`, `io/`, `pipe/`, `shared/`);
+	its README's "Architecture" section maps every file. Tests: `node --test ../shared/command.test.mjs
+	pipe/pipe.test.mjs` from the emscripten folder, then the Mayo tester in Chrome. The command parser,
+	folder path helpers and folder picker/store were later moved to `src/lib/execution_backend/shared/`
+	for every backend (Java uses them too).
 
 2. (Done) Fix or replace the stale Node test.
 
@@ -92,7 +106,7 @@ worker. Test everything with the Mayo tester page in real Chrome.
 	emscripten README. Add it there as a subsection of the "Pipes" section, then build it:
 	- Each tool worker is the pthread "main thread". Its pthreads are nested workers that share only
 		that tool's Wasm memory. Tools still connect only through the pipe.
-	- Pthread file calls are forwarded to the tool worker's main thread, so MAYOFS, URL links and
+	- Pthread file calls are forwarded to the tool worker's main thread, so FOLDERFS, URL links and
 		pipe devices work unchanged.
 	- Nested workers cannot start while the tool worker is blocked in `callMain`. Build with
 		`-sPTHREAD_POOL_SIZE=<JS expression, e.g. Module.mayoThreads>` and
@@ -109,8 +123,11 @@ worker. Test everything with the Mayo tester page in real Chrome.
 	- `cancel()` must also terminate the tool's pthread workers.
 	- This replaces the "tools stay single-threaded" rule in the emscripten README; update it.
 
-5. **Java tools (future, parked).** GATK, snpEff, SnpSift and Beagle via CheerpJ, streaming the
-	selected folder through a Java NIO bridge. The design and a proposed spike are in
+5. **Java tools (spike started).** GATK, snpEff, SnpSift and Beagle via CheerpJ. The CheerpJ tester
+	runs a jar from the selected folder, copying its input files in and its results back; large data
+	still needs the Java NIO bridge. A slim `gatk.jar` (78 MB instead of 375 MB) is built by
+	`npm run build:gatk` into [public/java/gatk/](public/java/gatk/README.md); the Java tester can
+	run it in CheerpJ on small inputs. See
 	[src/lib/execution_backend/java/README.md](src/lib/execution_backend/java/README.md).
 
 6. **Chips, the workflow engine on top of Mayo.** Tracks inputs, outputs, tools and commands,

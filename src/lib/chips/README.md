@@ -187,7 +187,7 @@ Port and argument fields:
 
 ### Watching File Access
 
-Every file a tool touches goes through MAYOFS, so Mayo can record which files a task actually read and wrote. Chips uses this to:
+Every file a tool touches goes through FOLDERFS (Mayo's folder filesystem, `tool/folder-fs.ts`), so Mayo can record which files a task actually read and wrote. Chips uses this to:
 - check command files in tests (declared outputs = files written);
 - warn on custom steps that read files they did not declare, which would break caching;
 - record the exact read set in `task.json`, so a change to an undeclared file (an index next to a BAM) still invalidates the cache.
@@ -392,7 +392,7 @@ Each run records the pipeline, parameter values, tool versions and `.wasm` hashe
 
 - Mayo now has per-tool workers and pipes (one task can be a pipe), but runs one `exec` at a time; running tasks in parallel needs concurrent `exec` support.
 - `cancel()`, a per-task working folder (a `cwd` inside `.chips/work/…`), and exit codes and stderr per run.
-- A list of files read and written per run, collected in MAYOFS.
+- A list of files read and written per run, collected in FOLDERFS.
 - Multi-threaded tool builds for `threads` to mean anything.
 
 ## Open Questions

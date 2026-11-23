@@ -8,7 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "fetch:tools": "node scripts/fetch-biowasm-tools.mjs"
+    "fetch:tools": "node scripts/fetch-biowasm-tools.mjs",
+    "build:tools": "node src/lib/tool-builder.mjs",
+    "build:java": "node scripts/build-java.mjs",
+    "build:gatk": "node scripts/build-gatk.mjs",
+    "build:fastqc": "node scripts/build-fastqc.mjs"
   },
   "dependencies": {
     "@biowasm/aioli": "^3.2.3",

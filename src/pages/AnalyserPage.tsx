@@ -1,3 +1,4 @@
+import CheerpTester from '../components/CheerpTester'
 import MayoTester from '../components/MayoTester'
 import './AnalyserPage.css'
 
@@ -21,10 +22,11 @@ export default function AnalyserPage() {
         <li>Processing files directly from the user's filesystem</li>
         <li>Handling files larger than the available RAM</li>
         <li>Creating resumable pipelines for long-running tasks</li>
+        <li>Integrating with existing shell-like command pipelines like `|`, `&&`, and redirections</li>
       </ul>
 
       <MayoTester />
+      <CheerpTester />
     </div>
   )
 }
-

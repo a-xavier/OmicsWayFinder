@@ -1,0 +1,29 @@
+<!--
+  GATK and every runtime dependency, from Maven Central. scripts/build-gatk.mjs downloads them all,
+  then merges the jars listed in jars.txt into one. Change the version here, then run
+  `npm run build:gatk` with the trace argument to list the jars again.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>omicswayfinder</groupId>
+  <artifactId>gatk-slim</artifactId>
+  <version>1</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.broadinstitute</groupId>
+      <artifactId>gatk</artifactId>
+      <version>4.6.2.0</version>
+      <exclusions>
+        <!-- Spark-only, and not on Maven Central (orc is a POM-only parent; this version was never published). -->
+        <exclusion><groupId>org.apache.orc</groupId><artifactId>orc</artifactId></exclusion>
+        <exclusion><groupId>com.fasterxml.jackson.module</groupId><artifactId>jackson-module-scala_2.13</artifactId></exclusion>
+        <!--
+          Spark's shaded Hadoop 3.3.4 (19 and 30 MB). GATK declares Hadoop 3.3.6 itself
+          (hadoop-common, 4.6 MB), which has the few Hadoop classes GATK loads.
+        -->
+        <exclusion><groupId>org.apache.hadoop</groupId><artifactId>hadoop-client-api</artifactId></exclusion>
+        <exclusion><groupId>org.apache.hadoop</groupId><artifactId>hadoop-client-runtime</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>
